@@ -1,0 +1,7 @@
+(ns atomic.test
+    (:require atomic))
+
+(defonce conn (atomic/engine {:url "sqlite://memory"}))
+
+(defonce schema (atomic/schema))
+
