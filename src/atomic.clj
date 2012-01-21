@@ -1,41 +1,31 @@
 (ns atomic
   (:refer-clojure :exclude [compile])
+  (:use atomic.util)
   (:require [atomic.localmap :as localmap]
+            clojure.set
             clojure.string
             clojure.walk))
 
-(defn stringify 
-  [s]
-  (cond 
-    (keyword? s) (name s)
-    (nil? s) s
-    :else (str s)))
-
-(defn keywordify 
-  [s]
-  (cond 
-    (keyword? s) s
-    (nil? s) s
-    :else (keyword s)))
-
-(defn create-engine 
-  "Create a new engine"
+(defn create-db 
+  "Create a new db"
   [schema params] 
   {
    :params params 
    :schema schema
    :local (localmap/create)})
 
-(defonce jdbc-inited (atom false))
-(defonce jdbc-libs (atom ["org.sqlite.JDBC" "org.postgresql.Driver"]))
+(defonce +jdbc-inited+ (atom #{}))
+(defonce +jdbc-libs+ (atom #{"org.sqlite.JDBC" "org.postgresql.Driver"}))
+(defn jdbc-register-lib 
+  "Add a JDBC library"
+  [driver-path] (swap! +jdbc-libs+ conj driver-path))
 
-(defn- safe-load-class [p]
-  (try (Class/forName p) (catch ClassNotFoundException e)))
-
-(defn init-jdbc []
-  (if (not @jdbc-inited) 
-    (doall (map safe-load-class @jdbc-libs))
-    (swap! jdbc-inited true)))
+(defn jdbc-initialize 
+  "Initialize JDBC drivers loading class libraries"
+  []
+  (doseq [driver-path (clojure.set/difference @+jdbc-libs+ @+jdbc-inited+)]
+    (safe-load-class driver-path))
+  (reset! +jdbc-inited+ @+jdbc-libs+))
 
 (defn add-foreign-key
   [schema table-key fk]
@@ -77,18 +67,18 @@
 (defn rollback [] (throw rollback-class))
 
 (defn create-connection
-  "Create a connection for an engine"
-  [engine]
-  (init-jdbc)
-  (let [url (:url (:params engine))]
+  "Create a connection for an db"
+  [db]
+  (jdbc-initialize)
+  (let [url (:url (:params db))]
     (let [c (java.sql.DriverManager/getConnection ^String url)]
       c)))
 
 (defn get-connection
-  "Get a connection from an engine"
-  [engine]
-  (let [m (:local engine)]
-    (localmap/setdefault m :connection (fn [] (create-connection engine)))))
+  "Get a connection from an db"
+  [db]
+  (let [m (:local db)]
+    (localmap/setdefault m :connection (fn [] (create-connection db)))))
 
 
 (defn get-result-set2
@@ -126,9 +116,9 @@
 
 (defn execute-sql 
   "Execute a query"
-  ([engine sql] (execute-sql engine sql []))
-  ([engine sql params]
-   (let [conn (get-connection engine)]
+  ([db sql] (execute-sql db sql []))
+  ([db sql params]
+   (let [conn (get-connection db)]
      (with-open [stmt (.prepareStatement conn sql)]
        (dorun (map-indexed (fn [idx p] (.setObject stmt (inc idx) p)) params))
        (let [has-result-set (.execute stmt)]
@@ -141,17 +131,13 @@
 
 (defmacro tx 
   "Perform a transaction" 
-  [engine & body] 
+  [db & body] 
   `(       
-    (exec ~engine "START TRANSACTION")
+    (exec ~db "START TRANSACTION")
     ~@body
-    (exec ~engine "COMMIT")
-    (exec ~engine "ROLLBACK")
+    (exec ~db "COMMIT")
+    (exec ~db "ROLLBACK")
     ))
-
-(defn columnify
-  [kw]
-  (clojure.string/replace (name kw) "-" "_"))
 
 (defn column 
   "Define a column"
@@ -168,11 +154,11 @@
 (def table? (type? :table))
 (def table? (type? :table))
 (def relation? (type? :relation))
-(defn infix? [t] (= (:type t) :infix))
-(defn prefix? [t] (= (:type t) :prefix))
-(defn unary? [t] (= (:type t) :unary))
-(defn on? [t] (= (:type t) :on))
-(defn foreign-key? [t] (= (:type t) :foreign-key))
+(def infix? (type? :infix))
+(def prefix? (type? :prefix))
+(def unary? (type? :unary))
+(def on? (type? :on))
+(def foreign-key? (type? :foreign-key))
 
 (defn create-schema
   "create a schema object"
@@ -294,15 +280,13 @@
    :on nil
    :source-query nil})
  
-(defn parts 
-    [f coll]
-    [(filter f coll) (filter #(not (f %1)) coll)])
+
  
 (defn from 
   [query
    relation-name
    & exprs]
-  (let [[on-exprs attr-exprs] (parts on? exprs)
+  (let [[on-exprs attr-exprs] (classify on? exprs)
         on-query (apply infix-op "AND" (flatten (map :items on-exprs)))
         new-relation (apply conj relation {:as relation-name :source-table relation-name :on on-query} attr-exprs)
         new-query (assoc query :relations (concat (:relations query) [new-relation]))]
@@ -464,19 +448,7 @@
      :column-key-paths (map :key-path (get-columns schema query))
      :bind bind}))
 
-(defn build-result
-  "Build a result set from a set of key paths"
-  [rows key-paths]
-  (let [key-paths0 (apply vector key-paths)
-        num-key-paths (count key-paths0)]
-    (for [row rows]
-      (loop [i 0
-             result {}]
-          (if (< i num-key-paths)
-             (recur 
-               (inc i)
-               (assoc-in result (get key-paths0 i) (get row i)))
-            result)))))
+
 
 (defn compile-query
   [query schema]
@@ -485,16 +457,144 @@
     :else (throw (Exception. "unexpected query"))))
 
 (defn execute
-  "Run a query against an engine"
-  [query engine]
+  "Run a query against an db"
+  [query db]
   ;(println "execute: " query)
-  (let [compiled (compile-query query (:schema engine))
-        result (execute-sql engine (:text compiled) (:bind compiled))
+  (let [compiled (compile-query query (:schema db))
+        result (execute-sql db (:text compiled) (:bind compiled))
         rows (:rows result)
         key-paths (:column-key-paths compiled)]
-    (assoc result :rows (build-result rows key-paths))))
+    (assoc result :rows (unflatten rows key-paths))))
 
 (defn get-primary-key
   [schema table]
   (first (filter :primary? (:columns (get @(:tables schema) table)))))
 
+(defn make-query
+  "make a query given an entity and some where-conditions"
+  [db entity where-parts]
+  (let [table (lookup-table (:schema db) entity)
+        key-paths (for [c (:columns table)] [(:key c)])
+        cols (reduce concat (for [column (:columns table)]
+                        [(keyword (format "%s.%s" (name entity) (:name column))) ; column expr
+                         [(:key column)]
+                         ])) ; key path
+        ; for some reason -> doesn't work here:
+        from-q (from select entity)
+        cols-q (apply columns from-q cols)
+        where-q (assoc cols-q :where where-parts)]
+    where-q))
+
+(defn- get-table 
+  [schema src-table [h & more]]
+  (if (not h)
+    src-table
+    (get-table schema (:table (get @(:foreign-keys schema) [src-table h])) more)))
+
+(defn join-to 
+  "Join a set of dotted relation-paths to a result set.
+  
+  In other words, fill-in a list of related row objects.
+
+  For instance if you have a schema like:
+
+    driver (id, name)
+    car (id, driver_id, garage_id, name)
+    garage (id, house_id)
+    house (id)
+
+  (join-to db :review [:user :user.emails] [{:id 1 :user_id 3}]) =>
+    [{:id 1 :user_id 3 :user { :id 3 :emails [{:id 1 :address \"foo@bar.com\"}]}}]
+  "
+  [db table relation-paths result-set]
+  (let [relation-paths0 (sort (parse-relation-paths relation-paths))
+        schema (:schema db)
+        result-set0 (atom result-set)]
+    (doseq [relation-path relation-paths0]
+      (let [parent-table-key (get-table schema table (all-but-last relation-path))
+            relation-key (last relation-path)
+            foreign-key (get @(:foreign-keys schema) [parent-table-key relation-key])
+            remote-table (:table foreign-key)
+            foreign-key-type (:type foreign-key)
+            remote-primary-key-col (get-primary-key schema remote-table)
+            remote-primary-key (:key remote-primary-key-col)
+            remote-primary-key-name (:name remote-primary-key-col)
+            column (:column foreign-key)]
+        (when (not foreign-key)
+          (throw (Exception. (format "expecting a foreign key for %s" relation-key))))
+        (when (not remote-table)
+          (throw (Exception. (format "expecting a remote table for %s" relation-key))))
+        (cond 
+          (= foreign-key-type :has-one)
+          ; has-one case
+          ; get all of the x.y.column values
+          (let [col-vals (apply hash-set (map column (get-in2 (all-but-last relation-path) @result-set0)))
+                ; Select the remote rows
+                rows (map relation-key (:rows (-> select
+                       (from remote-table {:as relation-key})
+                       (where (in (join-keywords relation-key
+                                                 remote-primary-key)
+                                  col-vals))
+                       (execute db))))
+                ; Get (remote primary key) -> (remote row)
+                pk-to-row (zipmap (map remote-primary-key rows) rows)
+                ]
+            ; Store the result
+            (reset! result-set0 (map-in 
+                                (fn [item] 
+                                  (assoc item relation-key (get pk-to-row (get item column))))
+                                (all-but-last relation-path)
+                                @result-set0)))
+          ; handle a has-many
+          (= foreign-key-type :has-many) 
+          (let [local-primary-key :id ; fixme
+                items (get-in2 (all-but-last relation-path) @result-set0)
+                local-keys (map local-primary-key items)
+                rows (map relation-key (:rows (-> select 
+                       (from remote-table {:as relation-key})
+                       (where (in (join-keywords relation-key column) local-keys))
+                       (execute db))))
+                local-primary-key-to-rows (get-key-to-seq rows column)
+                get-val (fn [item] (get local-primary-key-to-rows (get item local-primary-key [])))
+                replace-item (fn [item] (assoc item relation-key (get-val item)))
+                new-result-set (map-in replace-item (all-but-last relation-path) @result-set0)]
+            (reset!  result-set0 new-result-set)
+          ) 
+          :else (throw (Exception. (format "unexpected foreign key type: %s" foreign-key-type))))))
+    @result-set0))
+
+(defmacro one 
+  "Get one item
+
+  Examples
+
+    : Load a user with id 5
+    (one db :user (> :id 5)) 
+
+    ; Load a user with id 3, and review and review.business joined
+    (one db :user (= :id 3) :review :review.business) 
+    
+    ; Load a user with id 5 and email joined
+    (one db :user (= :id 5) :email) 
+    
+    ; Load a user with id 5 and email joined
+    (one db :user (= :id 5) :emails)) 
+  "
+  [db entity & options]
+  `(let [where# (list ~@(parse-dsl (filter not-keyword? options)))
+         join-key-paths# (filter keyword? (list ~@options)) 
+         query# (make-query ~db ~entity where#)
+         result# (execute query# ~db)
+         row# (first (:rows result#))
+         joined-rows# (join-to ~db ~entity join-key-paths# [row#])]
+       (first joined-rows#)))
+
+(defmacro many 
+  "Get many items"
+  [db entity & options]
+  `(let [where# (list ~@(parse-dsl (filter not-keyword? options)))
+         join-key-paths# (filter keyword? (list ~@options)) 
+         query# (make-query ~db ~entity where#)
+         result# (execute query# ~db)
+         joined-rows# (join-to ~db ~entity join-key-paths# (:rows result#))]
+       joined-rows#))

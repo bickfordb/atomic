@@ -84,3 +84,41 @@
   [a-seq]
   (take (dec (count a-seq)) a-seq))
 
+(defn stringify 
+  [s]
+  (cond 
+    (keyword? s) (name s)
+    (nil? s) s
+    :else (str s)))
+
+(defn keywordify 
+  [s]
+  (cond 
+    (keyword? s) s
+    (nil? s) s
+    :else (keyword s)))
+
+(defn columnify
+  [kw]
+  (clojure.string/replace (name kw) "-" "_"))
+
+(defn safe-load-class [p]
+  (try (Class/forName p) (catch ClassNotFoundException e)))
+
+(defn classify 
+    [f coll]
+    [(filter f coll) (filter #(not (f %1)) coll)])
+
+(defn unflatten
+  "Build a nested result set from a set of key paths"
+  [rows key-paths]
+  (let [key-paths0 (apply vector key-paths)
+        num-key-paths (count key-paths0)]
+    (for [row rows]
+      (loop [i 0
+             result {}]
+          (if (< i num-key-paths)
+             (recur 
+               (inc i)
+               (assoc-in result (get key-paths0 i) (get row i)))
+            result)))))
