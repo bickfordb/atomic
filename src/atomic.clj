@@ -4,11 +4,26 @@
             clojure.string
             clojure.walk))
 
+(defn stringify 
+  [s]
+  (cond 
+    (keyword? s) (name s)
+    (nil? s) s
+    :else (str s)))
+
+(defn keywordify 
+  [s]
+  (cond 
+    (keyword? s) s
+    (nil? s) s
+    :else (keyword s)))
+
 (defn create-engine 
   "Create a new engine"
-  [params] 
+  [schema params] 
   {
    :params params 
+   :schema schema
    :local (localmap/create)})
 
 (defonce jdbc-inited (atom false))
@@ -22,7 +37,42 @@
     (doall (map safe-load-class @jdbc-libs))
     (swap! jdbc-inited true)))
 
-(defonce rollback-class (get-proxy-class java.lang.Exception))
+(defn add-foreign-key
+  [schema table-key fk]
+  (swap! (schema :foreign-keys) assoc [table-key (:key fk)] fk))
+
+(def foreign-key
+  {:type :foreign-key
+   :key nil
+   :foreign-key-type nil
+   :dst-table nil
+   :dst-col nil
+   :src-table nil
+   :src-col nil})
+
+(defn has-one 
+  "Get a has-one foreign key"
+  ([key table column] (has-one key table column nil))
+  ([key table column reverse]
+    {:type :has-one
+     :key key
+     :column column
+     :table table
+     :reverse reverse}))
+
+(defn has-many 
+  "Get a has-many foreign key"
+  ([key table column] 
+   (has-many key table column nil))
+  ([key table column reverse]
+     {:type :has-many
+      :key key
+      :column column
+      :table table
+      :reverse reverse}))
+
+(defonce rollback-class 
+  (get-proxy-class java.lang.Exception))
 
 (defn rollback [] (throw rollback-class))
 
@@ -51,7 +101,6 @@
                 :while (and (.next result-set) (not (.isAfterLast result-set)))]
             (for [col-idx col-indices]
               ((fn [] 
-                 (println col-idx)
                  (.getObject result-set ^int (int (inc col-idx))))))))
         ))))
 
@@ -60,8 +109,14 @@
   the rows in the java.sql.ResultSet rs"
   {:added "1.0"}
   [^java.sql.ResultSet rs]
-    (let [idxs (range 1 (inc (.getColumnCount (.getMetaData rs))))
-          row-values (fn [] (doall (map #(.getObject rs ^Integer %1) idxs)))
+    (let [n (inc (.getColumnCount (.getMetaData rs)))
+          row-values (fn []
+                       (let [row (transient (vector))]
+                         (loop [i 1]
+                            (when (< i n) 
+                             (conj! row (.getObject rs i))
+                             (recur (inc i))))
+                         (persistent! row)))
           result (transient (vector))]
       (loop []
         (when (.next rs)
@@ -69,27 +124,24 @@
           (recur)))
       (persistent! result))) 
 
-(defn get-result-set
-  [statement]
-  (with-open [result-set (.getResultSet statement)]
-    (resultset-seq2 result-set)))
-
-(defn execute 
+(defn execute-sql 
   "Execute a query"
-  ([engine sql] (execute engine sql []))
+  ([engine sql] (execute-sql engine sql []))
   ([engine sql params]
-  (let [conn (get-connection engine)]
-    (with-open [stmt (.prepareStatement conn sql)]
-      (dorun (map-indexed (fn [idx p] (.setObject stmt (inc idx) p)) params))
-      (let [has-result-set (.execute stmt)]
-        {:sql sql 
-         :params params
-         :rows (if has-result-set (get-result-set stmt) [])
-         :update-count (if has-result-set 0 (.getUpdateCount stmt))})))))
+   (let [conn (get-connection engine)]
+     (with-open [stmt (.prepareStatement conn sql)]
+       (dorun (map-indexed (fn [idx p] (.setObject stmt (inc idx) p)) params))
+       (let [has-result-set (.execute stmt)]
+         {:sql sql 
+          :params params
+          :rows (if has-result-set 
+                  (with-open [rs (.getResultSet stmt)] (resultset-seq2 rs))
+                  [])
+          :update-count (if has-result-set 0 (.getUpdateCount stmt))})))))
 
 (defmacro tx 
   "Perform a transaction" 
-  [engine & body ] 
+  [engine & body] 
   `(       
     (exec ~engine "START TRANSACTION")
     ~@body
@@ -103,33 +155,84 @@
 
 (defn column 
   "Define a column"
-  [x & params]
-  (conj {:name (columnify x) :key x} (apply hash-map params)))
+  [a-keyword & params]
+  (conj {:name (columnify a-keyword) 
+         :key a-keyword
+         :primary? false} (apply hash-map params)))
 
-(defn column? [t] (= (:type t) :column))
-(defn table? [t] (= (:type t) :table))
-(defn relation? [t] (= (:type t) :relation))
+(defn type? 
+  [a-type] 
+  (fn [t] (= (:type t) a-type)))
+
+(def column? (type? :column))
+(def table? (type? :table))
+(def table? (type? :table))
+(def relation? (type? :relation))
 (defn infix? [t] (= (:type t) :infix))
 (defn prefix? [t] (= (:type t) :prefix))
 (defn unary? [t] (= (:type t) :unary))
 (defn on? [t] (= (:type t) :on))
+(defn foreign-key? [t] (= (:type t) :foreign-key))
 
 (defn create-schema
   "create a schema object"
   []
-  {:tables (atom {})})
+  {:tables (atom {})
+   :foreign-keys (atom {})})
 
-(defn deftable
-  "Add an entity"
+(defn parse-columns
+  [opts]
+  (let [col-opts (filter #(or (keyword? %1) (column? %1)) opts)
+        ; convert keywords to columns
+        cols0 (for [c col-opts]
+                (if (keyword? c) (column c) c))
+        ; default the first column to primary
+        cols1 (if (some :primary? cols0)
+                cols0
+                (cons (assoc (first cols0) :primary? true) (rest cols0)))]
+    cols1))
+
+(defn add-table
+  "Add a table to a schema"
   [schema key & opts]
-  (swap! (:tables schema) 
-         assoc 
-         key 
-         {:name (name key)
-          :type :table
-          :columns (concat (filter column? opts)
-                           (map column (filter keyword? opts)))
-          :relations (filter relation? opts)}))
+  (let [columns (parse-columns opts)
+        pk-column (first (filter :primary? columns))]
+    (swap! (:tables schema) 
+           assoc 
+           key 
+           {:name (name key)
+            :type :table
+            :columns columns
+            :relations (filter relation? opts)})
+    (doseq [fk (filter (type? :has-one) opts)]
+      (add-foreign-key 
+        schema 
+        key fk)
+      (when (:reverse fk)
+        (add-foreign-key
+          schema
+          (:table fk)
+          {:table key
+           :column (:column fk)
+           :type :has-many
+           :key (:reverse fk)
+           :reverse (:key fk)}))
+      )
+    (doseq [fk (filter (type? :has-many) opts)]
+      (add-foreign-key 
+        schema 
+        key fk)
+      (when (:reverse fk)
+        (add-foreign-key
+          schema
+          (:table fk)
+          {:table key
+           :column (:column fk)
+           :type :has-one
+           :key (:reverse fk)
+           :reverse (:key fk)}))
+      )
+    ))
 
 
 (defn lookup-table [schema entity-name] 
@@ -159,14 +262,14 @@
   (fn [& args] {:type :func}))
 
 (defonce infix-operators (atom '{
-                                 = (infix "=")
-                                 + (infix "+")
-                                 / (infix "/")
-                                 * (infix "*")
-                                 qq (infix "qq")
-                                 >= (infix ">=")
-                                 != (infix "!=")
-                                 <= (infix "<=")}))
+                                 = (atomic/infix "=")
+                                 + (atomic/infix "+")
+                                 / (atomic/infix "/")
+                                 * (atomic/infix "*")
+                                 in (atomic/infix "IN")
+                                 >= (atomic/infix ">=")
+                                 != (atomic/infix "!=")
+                                 <= (atomic/infix "<=")}))
 
 ; hello dictionary types
 (defn where? [x] (and (map? x) (= (:type x) :where)))
@@ -204,6 +307,14 @@
         new-relation (apply conj relation {:as relation-name :source-table relation-name :on on-query} attr-exprs)
         new-query (assoc query :relations (concat (:relations query) [new-relation]))]
     new-query))
+
+(defn columns
+  "(columns [:u.id [:user :id] ] "
+  [query & cols]
+  (assoc query 
+         :columns 
+         (doall (for [[lhs rhs] (partition 2 cols)]
+                  {:expr lhs :key-path rhs}))))
 
 (defn parse-dsl 
   [clauses]
@@ -255,6 +366,13 @@
   [subject]
   [(bind subject)])
 
+(defn compile-sequential-expr
+  [query expr]
+  (concat 
+    ["("]
+    (interpose [","] (apply concat (map compile-literal-expr expr)))
+    [")"]))
+
 (defn compile-expr 
   "compile a where expression"
   [query expr]
@@ -263,6 +381,8 @@
     (integer? expr) (compile-literal-expr expr)
     (number? expr) (compile-literal-expr expr)
     (keyword? expr) (compile-keyword-expr query expr)
+    (sequential? expr) (compile-sequential-expr query expr)
+    (set? expr) (compile-sequential-expr query expr)
     (infix? expr) (concat 
                     ["("] 
                     (compile-expr query (:left expr)) 
@@ -309,7 +429,7 @@
 (defn compile-relation
   [schema relation]
   ; fix-me: compile sub-selects here.
-  (println "compile relation" relation)  
+  ;(println "compile relation" relation)  
   (let [relation-name (:name (lookup-table schema (:source-table relation)))
         relation-alias (name (:as relation))
         relation-part [relation-name " AS " relation-alias]]
@@ -341,19 +461,21 @@
                         (compile-limit-clause schema query)])
         [sql bind] (partition-bind exprs)] 
     {:text (clojure.string/join sql) 
-     :column-paths []
+     :column-key-paths (map :key-path (get-columns schema query))
      :bind bind}))
 
 (defn build-result
+  "Build a result set from a set of key paths"
   [rows key-paths]
-  (let [num-key-paths (count key-paths)]
+  (let [key-paths0 (apply vector key-paths)
+        num-key-paths (count key-paths0)]
     (for [row rows]
       (loop [i 0
              result {}]
           (if (< i num-key-paths)
              (recur 
                (inc i)
-               (assoc-in result (get key-paths i) (get row i)))
+               (assoc-in result (get key-paths0 i) (get row i)))
             result)))))
 
 (defn compile-query
@@ -361,4 +483,18 @@
   (cond 
     (select? query) (compile-select schema query)
     :else (throw (Exception. "unexpected query"))))
+
+(defn execute
+  "Run a query against an engine"
+  [query engine]
+  ;(println "execute: " query)
+  (let [compiled (compile-query query (:schema engine))
+        result (execute-sql engine (:text compiled) (:bind compiled))
+        rows (:rows result)
+        key-paths (:column-key-paths compiled)]
+    (assoc result :rows (build-result rows key-paths))))
+
+(defn get-primary-key
+  [schema table]
+  (first (filter :primary? (:columns (get @(:tables schema) table)))))
 
