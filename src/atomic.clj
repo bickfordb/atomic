@@ -2,32 +2,26 @@
   (:refer-clojure :exclude [compile])
   (:use atomic.util)
   (:require [atomic.localmap :as localmap]
-            clojure.set
             clojure.string
             clojure.walk))
 
 (defn create-db 
   "Create a new db"
-  [schema params] 
+  [schema driver url] 
   {
-   :params params 
+   :driver driver
+   :url url
    :schema schema
    :local (localmap/create)})
 
-(defonce +jdbc-inited+ (atom #{}))
-(defonce +jdbc-libs+ (atom #{"org.sqlite.JDBC" "org.postgresql.Driver"}))
-(defn jdbc-register-lib 
-  "Add a JDBC library"
-  [driver-path] (swap! +jdbc-libs+ conj driver-path))
+(defonce +jdbc-loaded+ (atom #{}))
+(defn- load-jdbc-driver
+  [driver-path]
+  (when (not (contains? @+jdbc-loaded+ driver-path))
+    (Class/forName driver-path)
+    (swap! +jdbc-loaded+ conj driver-path)))
 
-(defn jdbc-initialize 
-  "Initialize JDBC drivers loading class libraries"
-  []
-  (doseq [driver-path (clojure.set/difference @+jdbc-libs+ @+jdbc-inited+)]
-    (safe-load-class driver-path))
-  (reset! +jdbc-inited+ @+jdbc-libs+))
-
-(defn add-foreign-key
+(defn- add-foreign-key
   [schema table-key fk]
   (swap! (schema :foreign-keys) assoc [table-key (:key fk)] fk))
 
@@ -66,35 +60,19 @@
 
 (defn rollback [] (throw rollback-class))
 
-(defn create-connection
+(defn- create-connection
   "Create a connection for an db"
   [db]
-  (jdbc-initialize)
-  (let [url (:url (:params db))]
-    (let [c (java.sql.DriverManager/getConnection ^String url)]
-      c)))
+  (load-jdbc-driver (:driver db))
+  (java.sql.DriverManager/getConnection ^String (:url db)))
 
-(defn get-connection
+(defn- get-connection
   "Get a connection from an db"
   [db]
   (let [m (:local db)]
     (localmap/setdefault m :connection (fn [] (create-connection db)))))
 
-
-(defn get-result-set2
-  [statement]
-  (with-open [result-set (.getResultSet statement)]
-    (let [metadata (.getMetaData result-set)]
-      (let [col-indices (range (.getColumnCount metadata))]
-        (doall 
-          (for [row-idx (iterate inc 0) 
-                :while (and (.next result-set) (not (.isAfterLast result-set)))]
-            (for [col-idx col-indices]
-              ((fn [] 
-                 (.getObject result-set ^int (int (inc col-idx))))))))
-        ))))
-
-(defn resultset-seq2
+(defn- resultset-seq2
   "Creates and returns a vector of tuples corresponding to
   the rows in the java.sql.ResultSet rs"
   {:added "1.0"}
@@ -120,7 +98,8 @@
   ([db sql params]
    (let [conn (get-connection db)]
      (with-open [stmt (.prepareStatement conn sql)]
-       (dorun (map-indexed (fn [idx p] (.setObject stmt (inc idx) p)) params))
+       (dorun (map-indexed 
+                (fn [idx p] (.setObject stmt (inc idx) p)) params))
        (let [has-result-set (.execute stmt)]
          {:sql sql 
           :params params
@@ -146,19 +125,31 @@
          :key a-keyword
          :primary? false} (apply hash-map params)))
 
-(defn type? 
-  [a-type] 
-  (fn [t] (= (:type t) a-type)))
+(defmacro deftype?
+  [a-key]
+  (let [kw (keyword (name a-key))] 
+     `(defn-
+       ~(symbol (str (name a-key) "?"))
+       [m#]
+       (and (map? m#) 
+            (= (:type m#) ~kw)))))
 
-(def column? (type? :column))
-(def table? (type? :table))
-(def table? (type? :table))
-(def relation? (type? :relation))
-(def infix? (type? :infix))
-(def prefix? (type? :prefix))
-(def unary? (type? :unary))
-(def on? (type? :on))
-(def foreign-key? (type? :foreign-key))
+(deftype? column)
+(deftype? table)
+(deftype? relation)
+(deftype? infix)
+(deftype? prefix)
+(deftype? unary)
+(deftype? on)
+(deftype? foreign-key)
+(deftype? where)
+(deftype? relation)
+(deftype? select)
+(deftype? insert)
+(deftype? update)
+(deftype? has-one)
+(deftype? has-many)
+
 
 (defn create-schema
   "create a schema object"
@@ -166,7 +157,7 @@
   {:tables (atom {})
    :foreign-keys (atom {})})
 
-(defn parse-columns
+(defn- parse-columns
   [opts]
   (let [col-opts (filter #(or (keyword? %1) (column? %1)) opts)
         ; convert keywords to columns
@@ -190,7 +181,7 @@
             :type :table
             :columns columns
             :relations (filter relation? opts)})
-    (doseq [fk (filter (type? :has-one) opts)]
+    (doseq [fk (filter has-one? opts)]
       (add-foreign-key 
         schema 
         key fk)
@@ -204,7 +195,7 @@
            :key (:reverse fk)
            :reverse (:key fk)}))
       )
-    (doseq [fk (filter (type? :has-many) opts)]
+    (doseq [fk (filter has-many? opts)]
       (add-foreign-key 
         schema 
         key fk)
@@ -221,7 +212,7 @@
     ))
 
 
-(defn lookup-table [schema entity-name] 
+(defn- lookup-table [schema entity-name] 
   (let [entity (get @(:tables schema) entity-name nil)]
     (if entity entity
       (throw (Exception. (format "unexpected entity \"%s\"" entity-name))))))
@@ -239,14 +230,6 @@
   [op]
   (fn [l r] {:type :infix :op op :left l :right r}))
 
-(defn sql-and
-  [& xs]
-  (apply infix-op "AND" xs))
-
-(defn sql-func
-  [func]
-  (fn [& args] {:type :func}))
-
 (defonce infix-operators (atom '{
                                  = (atomic/infix "=")
                                  + (atomic/infix "+")
@@ -257,12 +240,6 @@
                                  != (atomic/infix "!=")
                                  <= (atomic/infix "<=")}))
 
-; hello dictionary types
-(defn where? [x] (and (map? x) (= (:type x) :where)))
-(defn relation? [x] (and (map? x) (= (:type x) :relation)))
-(defn select? [x] (and (map? x) (= (:type x) :select)))
-(defn insert? [x] (and (map? x) (= (:type x) :insert)))
-(defn update? [x] (and (map? x) (= (:type x) :update)))
 
 (def select 
   "get a select query"

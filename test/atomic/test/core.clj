@@ -23,8 +23,7 @@
 
 (defn memory-db
   []
-  (java.sql.DriverManager/getDrivers)
-  (create-db schema {:url "jdbc:sqlite::memory:"}))
+  (create-db schema "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
 
 (deftest 
   execute-sql-test
@@ -33,13 +32,8 @@
         rows (:rows result)]
     (is (= rows [[1]]))))
 
-(defn init-drivers
-  []
-  (java.sql.DriverManager/getDrivers))
-
 (deftest 
   simple-test
-  (init-drivers)
   (let [db (memory-db)]
     (execute-sql db "create table user (id integer primary key, name text, created_at integer)")
     (execute-sql db "create table review (id integer primary key, user_id integer, comment text)")
