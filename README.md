@@ -16,21 +16,19 @@ A small SQL library for Clojure
 (def schema (create-schema))
 
 ; Describe a user table 
-(add-table 
-  schema 
+(deftable 
   :user
   :id
   :name
   (has-many :emails :email :user_id :user))
 
-(add-table 
-  schema 
+(deftable 
   :email
   :id
   :address
   :user_id)
 
-(def db (create-db schema "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
+(def db (create-db "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
 (execute-sql db "create table user (id integer primary key, name text, created_at integer)")
 (execute-sql db "create table email (id integer primary key, user_id integer, address text)")
 

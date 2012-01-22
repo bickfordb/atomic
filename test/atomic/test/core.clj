@@ -7,14 +7,12 @@
 
 (def schema (create-schema))
 
-(add-table 
-  schema 
+(deftable 
   :user
   :id
   :name)
 
-(add-table 
-  schema 
+(deftable 
   :review
   :id
   :user_id
@@ -23,7 +21,7 @@
 
 (defn memory-db
   []
-  (create-db schema "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
+  (create-db "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
 
 (deftest 
   execute-sql-test

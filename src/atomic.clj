@@ -5,13 +5,21 @@
             clojure.string
             clojure.walk))
 
+(defn create-schema
+  "create a schema object"
+  []
+  {:tables (atom {})
+   :foreign-keys (atom {})})
+
+(def +schema+ (create-schema))
+
 (defn create-db 
   "Create a new db"
-  [schema driver url] 
+  [driver url & opts] 
   {
    :driver driver
    :url url
-   :schema schema
+   :schema (get opts :schema +schema+)
    :local (localmap/create)})
 
 (defonce +jdbc-loaded+ (atom #{}))
@@ -153,11 +161,6 @@
 (deftype? has-many)
 
 
-(defn create-schema
-  "create a schema object"
-  []
-  {:tables (atom {})
-   :foreign-keys (atom {})})
 
 (defn- parse-columns
   [opts]
@@ -171,11 +174,16 @@
                 (cons (assoc (first cols0) :primary? true) (rest cols0)))]
     cols1))
 
-(defn add-table
+(defn deftable
   "Add a table to a schema"
-  [schema key & opts]
+  [key & opts]
   (let [columns (parse-columns opts)
+        opts0 (->> (cons {:schema +schema+} opts)
+                (filter #(and (map? %) (not (column? %))))
+                (reduce conj)) 
+        schema (:schema opts0)
         pk-column (first (filter :primary? columns))]
+
     (swap! (:tables schema) 
            assoc 
            key 
