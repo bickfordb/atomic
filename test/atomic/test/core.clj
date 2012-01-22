@@ -32,11 +32,16 @@
         rows (:rows result)]
     (is (= rows [[1]]))))
 
-(deftest 
-  simple-test
+(defn empty-db 
+  []
   (let [db (memory-db)]
     (execute-sql db "create table user (id integer primary key, name text, created_at integer)")
     (execute-sql db "create table review (id integer primary key, user_id integer, comment text)")
+    db))
+
+(deftest 
+  simple-test
+  (let [db (empty-db)]
     (is (= []
            (:rows (execute-sql db "select id from user"))))
     (execute-sql db "insert into user (id, name) values (?, ?)" [1 "Brandon"])
@@ -94,3 +99,38 @@
                (parse-relation-paths [:a.b])
                #{[:a] [:a :b]})))
 
+(deftest insert-test
+  (let [db (empty-db)]
+    (-> (insert-into :user {:name "Brandon"})
+      (execute db))
+    (is (= (many db :user) [{:id 1 :name "Brandon"}]))
+    )
+)
+
+(deftest update-test
+  (let [db (empty-db)]
+    (-> (insert-into :user {:name "Brandon"}) (execute db))
+    (-> 
+      (update :user {:name "Sam"})
+      (where (= 1 :id))
+      (execute db))
+    (is (= (many db :user) [{:id 1 :name "Sam"}]))
+    )
+)
+
+(deftest delete-test
+  (let [db (empty-db)]
+    (-> 
+      (insert-into :user {:name "Brandon"}) 
+      (execute db))
+    (-> 
+      (insert-into :user {:name "Sam"}) 
+      (execute db))
+    (-> 
+      (delete :user) 
+      (where (= :name "Sam"))
+      (execute db))
+    (is (= (many db :user) [{:name "Brandon" :id 1}]))
+))
+
+  

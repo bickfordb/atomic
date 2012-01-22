@@ -96,6 +96,7 @@
   "Execute a query"
   ([db sql] (execute-sql db sql []))
   ([db sql params]
+   ;(println sql params)
    (let [conn (get-connection db)]
      (with-open [stmt (.prepareStatement conn sql)]
        (dorun (map-indexed 
@@ -147,6 +148,7 @@
 (deftype? select)
 (deftype? insert)
 (deftype? update)
+(deftype? delete)
 (deftype? has-one)
 (deftype? has-many)
 
@@ -249,6 +251,24 @@
    :limit nil
    :group-by []})
 
+(defn insert-into
+  [table values]
+  {:type :insert
+   :table table
+   :values values})
+
+(defn update
+  [table values]
+  {:type :update
+   :table table
+   :values values
+   :where []})
+
+(defn delete [table] 
+  {:type :delete
+   :table table
+   :where []})
+
 (def relation 
   {:type :relation
    :as nil
@@ -256,8 +276,6 @@
    :source-table nil
    :on nil
    :source-query nil})
- 
-
  
 (defn from 
   [query
@@ -363,7 +381,7 @@
   (if (empty? (:where query))
     [] ; empty where
     (let [where-exprs0 (map #(compile-expr query %1) (:where query))
-          where-exprs (interpose " AND " where-exprs0)]
+          where-exprs (apply concat (interpose [" AND "] where-exprs0))]
       (cons " WHERE " where-exprs))))
 
 (defn compile-col-clause [schema query] 
@@ -425,12 +443,66 @@
      :column-key-paths (map :key-path (get-columns schema query))
      :bind bind}))
 
+(defn compile-insert-values
+  [schema query]
+  (let [values (:values query)
+        cols (keys values)] ; fixme
+    (concat 
+      ["("]
+      (interpose "," (map name cols))
+      [") VALUES ("]
+      (interpose "," (for [col cols]
+                       (bind (get values col))))
+      [")"])))
 
+(defn compile-insert 
+  "Compile an insert query"
+  [schema query]
+  (let [exprs (apply concat [["INSERT INTO " (name (:table query)) " "]
+                             (compile-insert-values schema query)])
+        [sql bind] (partition-bind exprs)]
+    {:text (clojure.string/join sql)
+     :bind bind
+     :column-key-paths []}))
+
+(defn compile-update-values
+  [schema query]
+  (concat 
+    [" SET "]
+    (apply concat 
+           (interpose [", "]
+                      (for [[k v] (:values query)]
+                               [(name k) " = " (bind v)])))))
+
+(defn compile-update 
+  "Compile an insert query"
+  [schema query]
+  (let [exprs (apply concat [["UPDATE " (name (:table query)) " "]
+                             (compile-update-values schema query)
+                             (compile-where-clause schema query)])
+        [sql bind] (partition-bind exprs)]
+    {:text (clojure.string/join sql)
+     :bind bind
+     :column-key-paths []}))
+
+(defn compile-delete 
+  "Compile a delete query"
+  [schema query]
+  (let [exprs (apply concat 
+                     [["DELETE FROM " (name (:table query)) " "]
+                      (compile-where-clause schema query)])
+        [sql bind] (partition-bind exprs)]
+    {:text (clojure.string/join sql)
+     :bind bind
+     :column-key-paths []}))
 
 (defn compile-query
   [query schema]
   (cond 
     (select? query) (compile-select schema query)
+    (insert? query) (compile-insert schema query)
+    (update? query) (compile-update schema query)
+    (delete? query) (compile-delete schema query)
     :else (throw (Exception. "unexpected query"))))
 
 (defn execute
