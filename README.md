@@ -1,5 +1,5 @@
 
-# ATOMIC &#9883;
+# &#9883; ATOMIC &#9883;
 
 A small SQL library for Clojure
 
@@ -21,7 +21,7 @@ A small SQL library for Clojure
   :user
   :id
   :name
-  (has-many :emails :email :user_id :user)
+  (has-many :emails :email :user_id :user))
 
 (add-table 
   schema 
