@@ -47,7 +47,7 @@ A small SQL library for Clojure
 ;  {:user {:name "Brandon" :id 5} :email {:address "bar@bar.com" :user_id 1 :id 2}}]
 
 ; Easy-join graph API (one/many):
- Get the "Brandon" record, and join in the emails
+; Get the "Brandon" record, and join in the related emails
 
 (println (one db :user :emails (= (:name "Brandon")))) 
 ; [{:name "Brandon" :id 5 :emails [{:address "foo@bar.com" :user_id 1 :id 1} {:address "bar@bar.com" :user_id 1 :id 2}]}]
