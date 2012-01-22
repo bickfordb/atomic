@@ -122,3 +122,27 @@
                (inc i)
                (assoc-in result (get key-paths0 i) (get row i)))
             result)))))
+
+(defn default
+  [m defaults]
+  (loop [m0 m
+         kvs (seq defaults)] 
+    (if 
+      (empty? kvs) 
+      m0
+      (let [[k v] (first kvs)
+            m1 (if (contains? m0 k) 
+                 m0 
+                 (assoc m0 
+                        k 
+                        ; expand functions:
+                        (cond 
+                          (keyword? v) v
+                          (map? v) v
+                          (set? v) v
+                          (sequential? v) v
+                          (ifn? v) (v)
+                          (fn? v) (v)
+                          :else v)))]
+        (recur m1 (rest kvs))))))
+

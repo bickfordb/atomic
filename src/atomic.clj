@@ -128,10 +128,22 @@
     ))
 
 (defn column 
-  "Define a column"
+  "Define a column
+  
+  Arguments
+  name -- string, the key of the column
+  options
+    :initial -- use this value on insert if none is provided 
+    :default -- use this value on update if none is provided
+    :name -- the name of the column in the table
+
+  Returns
+  Column
+  "
   [a-keyword & params]
   (conj {:name (columnify a-keyword) 
          :key a-keyword
+         :type :column
          :primary? false} (apply hash-map params)))
 
 (defmacro deftype?
@@ -367,6 +379,7 @@
     (string? expr) (compile-literal-expr expr) 
     (integer? expr) (compile-literal-expr expr)
     (number? expr) (compile-literal-expr expr)
+    (float? expr) (compile-literal-expr expr)
     (keyword? expr) (compile-keyword-expr query expr)
     (sequential? expr) (compile-sequential-expr query expr)
     (set? expr) (compile-sequential-expr query expr)
@@ -416,7 +429,6 @@
 (defn compile-relation
   [schema relation]
   ; fix-me: compile sub-selects here.
-  ;(println "compile relation" relation)  
   (let [relation-name (:name (lookup-table schema (:source-table relation)))
         relation-alias (name (:as relation))
         relation-part [relation-name " AS " relation-alias]]
@@ -451,17 +463,36 @@
      :column-key-paths (map :key-path (get-columns schema query))
      :bind bind}))
 
-(defn compile-insert-values
+(defn get-col-vals 
+  [schema table kw]
+  (let [t (get @(:tables schema) table)
+        cols (filter #(contains? % kw) (:columns t))
+        kvseq (for [col cols] [(:key col) (get col kw)])
+        initials (apply hash-map (apply concat kvseq))]
+    initials))
+
+(defn- get-insert-defaults 
+  [schema table]
+  (get-col-vals schema table :initial))
+               
+(defn- get-update-defaults 
+  [schema table]
+  (get-col-vals schema table :default))
+
+(defn- compile-insert-values
   [schema query]
-  (let [values (:values query)
-        cols (keys values)] ; fixme
-    (concat 
-      ["("]
-      (interpose "," (map name cols))
-      [") VALUES ("]
-      (interpose "," (for [col cols]
-                       (bind (get values col))))
-      [")"])))
+  (let [values0 (:values query)
+        initials (get-col-vals schema (:table query) :initial)
+        values (default values0 initials)
+        colvals (seq values)]
+    (if (empty? values)
+      [] 
+      (concat 
+        ["("]
+        (interpose "," (for [[k v] colvals] (name k)))
+        [") VALUES ("]
+        (interpose "," (for [[k v] colvals] (bind v)))
+        [")"]))))
 
 (defn compile-insert 
   "Compile an insert query"
@@ -475,12 +506,15 @@
 
 (defn compile-update-values
   [schema query]
-  (concat 
-    [" SET "]
-    (apply concat 
-           (interpose [", "]
-                      (for [[k v] (:values query)]
-                               [(name k) " = " (bind v)])))))
+  (let [values0 (:values query)
+        defaults (get-col-vals schema (:table query) :default)
+        values (default values0 defaults)]
+    (concat 
+      [" SET "]
+      (apply concat 
+             (interpose [", "]
+                        (for [[k v] values]
+                          [(name k) " = " (bind v)]))))))
 
 (defn compile-update 
   "Compile an insert query"
@@ -516,7 +550,6 @@
 (defn execute
   "Run a query against an db"
   [query db]
-  ;(println "execute: " query)
   (let [compiled (compile-query query (:schema db))
         result (execute-sql db (:text compiled) (:bind compiled))
         rows (:rows result)

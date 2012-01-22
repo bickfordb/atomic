@@ -63,3 +63,8 @@
   (is (= {:q 1}
          (map-in #(assoc % :q 1) [] {}))))
 
+(deftest default-test
+         (is (= {:x 1} (default {} {:x 1})))
+         (is (= {:x 2} (default {:x 2} {:x 1}))))
+
+

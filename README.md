@@ -41,6 +41,7 @@ A small SQL library for Clojure
              (join :email (on (= :email.user_id :user.id)))
              (where (= :id 1))
              (execute db)))
+
 ; [{:user {:name "Brandon" :id 5} :email {:address "foo@bar.com" :user_id 1 :id 1}}
 ;  {:user {:name "Brandon" :id 5} :email {:address "bar@bar.com" :user_id 1 :id 2}}]
 

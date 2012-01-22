@@ -5,8 +5,6 @@
   (:use clojure.test
         atomic))
 
-(def schema (create-schema))
-
 (deftable 
   :user
   :id
@@ -18,6 +16,19 @@
   :user_id
   :comment
   (has-one :reviewer :user :user_id :reviews))
+
+(defn timestamp [] (/ (System/currentTimeMillis) 1000.0))
+
+
+(deftable 
+  :business
+  (column :id :primary? true)
+  (column :name :initial "Something")
+  (column :updated_at :initial timestamp :default timestamp)
+  (column :created_at :initial timestamp))
+
+
+
 
 (defn memory-db
   []
@@ -34,6 +45,7 @@
   []
   (let [db (memory-db)]
     (execute-sql db "create table user (id integer primary key, name text, created_at integer)")
+    (execute-sql db "create table business (id integer primary key, name text, updated_at integer, created_at integer)")
     (execute-sql db "create table review (id integer primary key, user_id integer, comment text)")
     db))
 
@@ -105,6 +117,7 @@
     )
 )
 
+
 (deftest update-test
   (let [db (empty-db)]
     (-> (insert-into :user {:name "Brandon"}) (execute db))
@@ -130,5 +143,29 @@
       (execute db))
     (is (= (many db :user) [{:name "Brandon" :id 1}]))
 ))
+
+(deftest insert-default-test
+   (let [db (empty-db)]
+     (-> 
+       (insert-into :business {:name "Something"})
+       (execute db))
+     (is 
+       (= (:name (one db :business))
+          "Something"))))
+
+(deftest update-default-test
+   (let [db (empty-db)]
+     (-> 
+       (insert-into :business {:name "hey0"})
+       (execute db))
+     (let [b0 (one db :business)]
+       (-> (update :business {:name "hey1"})
+           (execute db))
+       (let [b1 (one db :business)]
+         (is (= (:id b0) (:id b1)))
+         (is (> (:updated_at b1) (:updated_at b0)))))))
+
+      
+
 
   
