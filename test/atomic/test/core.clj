@@ -1,9 +1,8 @@
 (ns atomic.test.core
-  (:require atomic)
   (:use atomic.util)
   (:use clojure.core)
-  (:use clojure.test
-        atomic))
+  (:use clojure.test)
+  (:use atomic))
 
 (deftable 
   :user
@@ -165,7 +164,21 @@
          (is (= (:id b0) (:id b1)))
          (is (> (:updated_at b1) (:updated_at b0)))))))
 
-      
+(deftest insert-id-test
+   (let [db (empty-db)]
+     (is (= 1
+            (create db :business {:name "Hello"})))))
+
+(deftest tx-test
+  "Test transactions"
+  (let [db (empty-db)]
+    (try (tx db
+        (create db :business {:name "B"})
+        (throw Exception))
+      (catch Exception e))
+    (is (= 0 (count (many db :business))))
+    (tx db
+        (create db :business {:name "B"}))
+    (is (= 1 (count (many db :business))))))
 
 
-  

@@ -115,16 +115,21 @@
           :rows (if has-result-set 
                   (with-open [rs (.getResultSet stmt)] (resultset-seq2 rs))
                   [])
-          :update-count (if has-result-set 0 (.getUpdateCount stmt))})))))
+          :update-count (if has-result-set 0 (.getUpdateCount stmt))
+          :generated-keys (if has-result-set {} 
+                            (resultset-seq2 (.getGeneratedKeys stmt)))})))))
 
 (defmacro tx 
   "Perform a transaction" 
   [db & body] 
   `(       
-    (exec ~db "START TRANSACTION")
-    ~@body
-    (exec ~db "COMMIT")
-    (exec ~db "ROLLBACK")
+    (execute-sql ~db "BEGIN" [])
+    (try
+      ~@body
+      (execute-sql ~db "COMMIT")
+      (catch Exception the-exception#
+        (execute-sql ~db "ROLLBACK")
+        (throw the-exception#)))
     ))
 
 (defn column 
@@ -553,8 +558,13 @@
   (let [compiled (compile-query query (:schema db))
         result (execute-sql db (:text compiled) (:bind compiled))
         rows (:rows result)
-        key-paths (:column-key-paths compiled)]
-    (assoc result :rows (unflatten rows key-paths))))
+        key-paths (:column-key-paths compiled)
+        ]
+      (assoc result 
+             :insert-id (if (insert? query) 
+                          (first (first (:generated-keys result)))
+                          nil)
+             :rows (unflatten rows key-paths))))
 
 (defn get-primary-key
   [schema table]
@@ -688,3 +698,12 @@
          result# (execute query# ~db)
          joined-rows# (join-to ~db ~entity join-key-paths# (:rows result#))]
        joined-rows#))
+
+(defn create
+  "Create a row, returning its insert ID"
+  [db table props]
+  (-> (insert-into table props)
+    (execute db)
+    (:insert-id)))
+     
+
