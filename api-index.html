@@ -84,30 +84,25 @@ Shortcuts:<br />
   <h2 id="C"><span id="section-head">C</span></h2>
   <pre>
 <span id="section-content"> <a href="index.html#atomic/column">column</a><span id="line-content">                       function      atomic             Define a column  Arguments name -- string, the key...
-</span></span><span id="section-content"> <a href="index.html#atomic/columns">columns</a><span id="line-content">                      function      atomic             (columns [:u.id [:user :id] ] .
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-delete">compile-delete</a><span id="line-content">               function      atomic             Compile a delete query.
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-expr">compile-expr</a><span id="line-content">                 function      atomic             compile a where expression.
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-from-clause">compile-from-clause</a><span id="line-content">          function      atomic             Get the 'FROM' part of a select query.
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-insert">compile-insert</a><span id="line-content">               function      atomic             Compile an insert query.
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-keyword-expr">compile-keyword-expr</a><span id="line-content">         function      atomic             Compile a keyword where expr.
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-select">compile-select</a><span id="line-content">               function      atomic             Compile a select query.
-</span></span><span id="section-content"> <a href="index.html#atomic/compile-update">compile-update</a><span id="line-content">               function      atomic             Compile an insert query.
+</span></span><span id="section-content"> <a href="index.html#atomic/columns">columns</a><span id="line-content">                      function      atomic             Specify a list of (columns [:u.id [:user :id] ] .
+</span></span><span id="section-content"> <a href="index.html#atomic/compile-query">compile-query</a><span id="line-content">                function      atomic             Compile a query.  Arguments query -- map, the quer...
 </span></span><span id="section-content"> <a href="index.html#atomic/create">create</a><span id="line-content">                       function      atomic             Create a row, returning its insert ID.
-</span></span><span id="section-content"> <a href="index.html#atomic/create-db">create-db</a><span id="line-content">                    function      atomic             Create a new db.
-</span></span><span id="section-content"> <a href="index.html#atomic/create-schema">create-schema</a><span id="line-content">                function      atomic             create a schema object.
+</span></span><span id="section-content"> <a href="index.html#atomic/create-db">create-db</a><span id="line-content">                    function      atomic             Create a new db instance.  A db is a handle to a s...
+</span></span><span id="section-content"> <a href="index.html#atomic/create-schema">create-schema</a><span id="line-content">                function      atomic             Create a schema object.  Schema objects store tabl...
 </span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="D"><span id="section-head">D</span></h2>
   <pre>
-<span id="section-content"> <a href="index.html#atomic/deftable">deftable</a><span id="line-content">                     function      atomic             Add a table to a schema.
+<span id="section-content"> <a href="index.html#atomic/deftable">deftable</a><span id="line-content">                     function      atomic             Define a table  This has a couple of argument form...
+</span></span><span id="section-content"> <a href="index.html#atomic/deftype?">deftype?</a><span id="line-content">                     macro         atomic             Create a function which checks the :type of a map ...
 </span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="E"><span id="section-head">E</span></h2>
   <pre>
 <span id="section-content"> <a href="index.html#atomic/execute">execute</a><span id="line-content">                      function      atomic             Run a query against an db.
-</span></span><span id="section-content"> <a href="index.html#atomic/execute-sql">execute-sql</a><span id="line-content">                  function      atomic             Execute a query.
+</span></span><span id="section-content"> <a href="index.html#atomic/execute-sql">execute-sql</a><span id="line-content">                  function      atomic             Execute a SQL query.  Arguments db -- db sql -- st...
 </span></span>
   </pre>
 </div><div id="index-body">
@@ -123,14 +118,15 @@ Shortcuts:<br />
 </div><div id="index-body">
   <h2 id="H"><span id="section-head">H</span></h2>
   <pre>
-<span id="section-content"> <a href="index.html#atomic/has-many">has-many</a><span id="line-content">                     function      atomic             Get a has-many foreign key.
-</span></span><span id="section-content"> <a href="index.html#atomic/has-one">has-one</a><span id="line-content">                      function      atomic             Get a has-one foreign key.
+<span id="section-content"> <a href="index.html#atomic/has-many">has-many</a><span id="line-content">                     function      atomic             Get a has-many foreign key  This is used in a def...
+</span></span><span id="section-content"> <a href="index.html#atomic/has-one">has-one</a><span id="line-content">                      function      atomic             Get a has-one foreign key  This is used in a deft...
 </span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="I"><span id="section-head">I</span></h2>
   <pre>
-<span id="section-content"> <a href="index.html#atomic/infix">infix</a><span id="line-content">                        function      atomic             Generate an infix expression.
+<span id="section-content"> <a href="index.html#atomic/infix">infix</a><span id="line-content">                        function      atomic             Generate a function which takes two arguments  For...
+</span></span><span id="section-content"> <a href="index.html#atomic/insert-into">insert-into</a><span id="line-content">                  function      atomic             Get an insert query  Usage: (-&gt; (insert-into :us...
 </span></span>
   </pre>
 </div><div id="index-body">
@@ -164,7 +160,8 @@ Shortcuts:<br />
 </div><div id="index-body">
   <h2 id="O"><span id="section-head">O</span></h2>
   <pre>
-<span id="section-content"> <a href="index.html#atomic/one">one</a><span id="line-content">                          macro         atomic             Get one item  Examples  : Load a user with id 5 ...
+<span id="section-content"> <a href="index.html#atomic/on">on</a><span id="line-content">                           macro         atomic             Add an ON clause to a join clause  See "where" .
+</span></span><span id="section-content"> <a href="index.html#atomic/one">one</a><span id="line-content">                          macro         atomic             Get one item  Examples  : Load a user with id 5 ...
 </span></span>
   </pre>
 </div><div id="index-body">
@@ -185,19 +182,22 @@ Shortcuts:<br />
 </div><div id="index-body">
   <h2 id="S"><span id="section-head">S</span></h2>
   <pre>
-<span id="section-content"> <a href="index.html#atomic/select">select</a><span id="line-content">                       var           atomic             get a select query.
+<span id="section-content"> <a href="index.html#atomic/select">select</a><span id="line-content">                       var           atomic             A empty select query  Usage: (-&gt; select (f...
+</span></span><span id="section-content"> <a href="index.html#atomic/sql">sql</a><span id="line-content">                          function      atomic             Generate a SQL expression.
 </span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="T"><span id="section-head">T</span></h2>
   <pre>
-<span id="section-content"> <a href="index.html#atomic/tx">tx</a><span id="line-content">                           macro         atomic             Perform a transaction.
+<span id="section-content"> <a href="index.html#atomic/tx">tx</a><span id="line-content">                           macro         atomic             Perform a transaction for a database  When an exc...
+</span></span><span id="section-content"> <a href="index.html#atomic/tx-read-only">tx-read-only</a><span id="line-content">                 macro         atomic             Run a block of commands for a database in a read-o...
 </span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="U"><span id="section-head">U</span></h2>
   <pre>
-
+<span id="section-content"> <a href="index.html#atomic/update">update</a><span id="line-content">                       function      atomic             Get an update query  Usage: (-&gt; (update :user {:...
+</span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="V"><span id="section-head">V</span></h2>
@@ -207,7 +207,8 @@ Shortcuts:<br />
 </div><div id="index-body">
   <h2 id="W"><span id="section-head">W</span></h2>
   <pre>
-
+<span id="section-content"> <a href="index.html#atomic/where">where</a><span id="line-content">                        macro         atomic             Add a where clause to a query.   Arguments query -...
+</span></span>
   </pre>
 </div><div id="index-body">
   <h2 id="X"><span id="section-head">X</span></h2>

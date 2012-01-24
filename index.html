@@ -53,19 +53,7 @@ namespace.
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/columns">columns</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-delete">compile-delete</a>
-    </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-expr">compile-expr</a>
-    </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-from-clause">compile-from-clause</a>
-    </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-insert">compile-insert</a>
-    </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-keyword-expr">compile-keyword-expr</a>
-    </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-select">compile-select</a>
-    </div><div style="margin-left: 1em;" class="toc-entry">
-      <a href="#atomic/compile-update">compile-update</a>
+      <a href="#atomic/compile-query">compile-query</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/create">create</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
@@ -74,6 +62,8 @@ namespace.
       <a href="#atomic/create-schema">create-schema</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/deftable">deftable</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/deftype?">deftype?</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/execute">execute</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
@@ -85,17 +75,29 @@ namespace.
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/infix">infix</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/insert-into">insert-into</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/join-to">join-to</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/make-query">make-query</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/many">many</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/on">on</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/one">one</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/select">select</a>
     </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/sql">sql</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
       <a href="#atomic/tx">tx</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/tx-read-only">tx-read-only</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/update">update</a>
+    </div><div style="margin-left: 1em;" class="toc-entry">
+      <a href="#atomic/where">where</a>
     </div>
     <br />
   </div><div style="margin-left: 1em;" class="toc-section">
@@ -138,7 +140,51 @@ namespace.
 <br />Full namespace name: <span id="long-name">atomic</span>
 <p></p>
 <h2>Overview</h2>
-<pre id="namespace-docstr"></pre>
+<pre id="namespace-docstr">Library to simplify interaction with SQL databases
+
+Example:
+
+  (use 'atomic)
+  (def schema (create-schema))
+
+  ; Describe a user table 
+  (deftable 
+    :user
+    :id
+    :name
+    (has-many :emails :email :user_id :user))
+
+  (deftable 
+    :email
+    :id
+    :address
+    :user_id)
+
+  (def db (create-db "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
+  (execute-sql db "create table user (id integer primary key, name text, created_at integer)")
+  (execute-sql db "create table email (id integer primary key, user_id integer, address text)")
+
+  (insert db :user {:id 1 :name "Brandon"})
+  (insert db :email {:address "foo@bar.com" :user_id 1})
+  (insert db :email {:address "bar@bar.com" :user_id 1})
+
+  (println (-&gt; select 
+               (from :user)
+               (join :email (on (= :email.user_id :user.id)))
+               (where (= :id 1))
+               (execute db)))
+
+  ; [{:user {:name "Brandon" :id 5} :email {:address "foo@bar.com" :user_id 1 :id 1}}
+  ;  {:user {:name "Brandon" :id 5} :email {:address "bar@bar.com" :user_id 1 :id 2}}]
+
+  ; Easy-join graph API (one/many):
+  ; Get the "Brandon" record, and join in the related emails
+
+  (println (one db :user :emails (= (:name "Brandon")))) 
+  ; [{:name "Brandon" :id 5 :emails [{:address "foo@bar.com" :user_id 1 :id 1} {:address "bar@bar.com" :user_id 1 :id 2}]}]
+
+
+</pre>
 
 
 <br />
@@ -183,84 +229,27 @@ Column
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (columns query &amp; cols)
 </pre>
-  <pre id="var-docstr">(columns [:u.id [:user :id] ] </pre>
+  <pre id="var-docstr">Specify a list of (columns [:u.id [:user :id] ] </pre>
   
   
   
 </div><div id="var-entry">
   <br />
   <hr />
-  <h2 id="atomic/compile-delete">compile-delete</h2>
+  <h2 id="atomic/compile-query">compile-query</h2>
   <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-delete schema query)
+  <pre id="var-usage">Usage: (compile-query query schema)
 </pre>
-  <pre id="var-docstr">Compile a delete query</pre>
-  
-  
-  
-</div><div id="var-entry">
-  <br />
-  <hr />
-  <h2 id="atomic/compile-expr">compile-expr</h2>
-  <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-expr query expr)
+  <pre id="var-docstr">Compile a query.
+
+Arguments
+query -- map, the query
+
+Returns
+A map with the following keys
+  :text -- string, the SQL text
+  :bind -- list, a list of literals to bind
 </pre>
-  <pre id="var-docstr">compile a where expression</pre>
-  
-  
-  
-</div><div id="var-entry">
-  <br />
-  <hr />
-  <h2 id="atomic/compile-from-clause">compile-from-clause</h2>
-  <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-from-clause schema query)
-</pre>
-  <pre id="var-docstr">Get the 'FROM' part of a select query</pre>
-  
-  
-  
-</div><div id="var-entry">
-  <br />
-  <hr />
-  <h2 id="atomic/compile-insert">compile-insert</h2>
-  <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-insert schema query)
-</pre>
-  <pre id="var-docstr">Compile an insert query</pre>
-  
-  
-  
-</div><div id="var-entry">
-  <br />
-  <hr />
-  <h2 id="atomic/compile-keyword-expr">compile-keyword-expr</h2>
-  <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-keyword-expr query kw)
-</pre>
-  <pre id="var-docstr">Compile a keyword where expr</pre>
-  
-  
-  
-</div><div id="var-entry">
-  <br />
-  <hr />
-  <h2 id="atomic/compile-select">compile-select</h2>
-  <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-select schema query)
-</pre>
-  <pre id="var-docstr">Compile a select query</pre>
-  
-  
-  
-</div><div id="var-entry">
-  <br />
-  <hr />
-  <h2 id="atomic/compile-update">compile-update</h2>
-  <span id="var-type">function</span><br />
-  <pre id="var-usage">Usage: (compile-update schema query)
-</pre>
-  <pre id="var-docstr">Compile an insert query</pre>
   
   
   
@@ -282,7 +271,13 @@ Column
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (create-db driver url &amp; opts)
 </pre>
-  <pre id="var-docstr">Create a new db</pre>
+  <pre id="var-docstr">Create a new db instance.
+
+A db is a handle to a schema and a database URL.  
+
+Calls to (execute db... ) and (execute-sql db) will lazily create and
+maintain thread-local connections 
+</pre>
   
   
   
@@ -293,7 +288,21 @@ Column
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (create-schema)
 </pre>
-  <pre id="var-docstr">create a schema object</pre>
+  <pre id="var-docstr">Create a schema object.
+
+Schema objects store table and foreign key definitions.  For simple
+applications this doesn't need to be called directly, usually you
+can use the default global schema object.  This is useful if you need to
+maintain multiple, conflicting table definitions in one
+application. 
+
+Example:
+  ; Create a schema object:
+  (def my-schema (create-schema))
+
+  ; Use my-schema in :my_table's definition:
+  (deftable :my_table {:schema my-schema}))
+</pre>
   
   
   
@@ -304,7 +313,48 @@ Column
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (deftable key &amp; opts)
 </pre>
-  <pre id="var-docstr">Add a table to a schema</pre>
+  <pre id="var-docstr">Define a table
+
+This has a couple of argument forms
+
+Here are some examples:
+  (deftable :company
+    :id
+    :title)
+   
+  (deftable :company
+    (column :id)
+    (column :title)
+    (has-many :employees :user :company_id)) 
+
+  (deftable :company
+    (column :id)
+    (column :title)
+    {:schema some-schema}) 
+
+The first column specified defaults to the primary-key column.
+
+</pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
+  <h2 id="atomic/deftype?">deftype?</h2>
+  <span id="var-type">macro</span><br />
+  <pre id="var-usage">Usage: (deftype? a-key)
+</pre>
+  <pre id="var-docstr">Create a function which checks the :type of a map
+
+This is useful for storing casual types in maps. 
+
+For example "(deftype? car)" will define a function named "car?" which checks its argument
+for having the :type key set to :car 
+
+Arguments
+a-key -- symbol, the name of the keyword and defined function
+</pre>
   
   
   
@@ -327,7 +377,19 @@ Column
   <pre id="var-usage">Usage: (execute-sql db sql)
        (execute-sql db sql params)
 </pre>
-  <pre id="var-docstr">Execute a query</pre>
+  <pre id="var-docstr">Execute a SQL query.
+
+Arguments
+db -- db
+sql -- string, a SQL query
+params -- [literals], a list of bind values 
+
+Returns
+A map with the following keys
+ :rows -- a list of row tuples if any
+ :update-count -- int, the number of updated rows if any
+ :generated-keys -- list, a list of generated keys (insert / sequence IDs).  Usually like [[25]] 
+</pre>
   
   
   
@@ -339,7 +401,31 @@ Column
   <pre id="var-usage">Usage: (has-many key table column)
        (has-many key table column reverse)
 </pre>
-  <pre id="var-docstr">Get a has-many foreign key</pre>
+  <pre id="var-docstr">Get a has-many foreign key
+
+ This is used in a deftable call.
+
+ For example:
+
+   (deftable :user 
+     (column :id)
+     (column :name)
+     (column :company_id))
+
+  (deftable :company
+     (column :id)
+     (column :title)
+     (has-many :employees :user :company_id :employer))
+
+ Arguments
+ key -- keyword, the name of the relation
+ table -- keyword, the name of the destination table
+ column -- keyword, the column name in the destination table
+ reverse -- keyword, the name of the reverse relation
+
+ Returns
+ A map with :type :has-many set 
+ </pre>
   
   
   
@@ -351,7 +437,27 @@ Column
   <pre id="var-usage">Usage: (has-one key table column)
        (has-one key table column reverse)
 </pre>
-  <pre id="var-docstr">Get a has-one foreign key</pre>
+  <pre id="var-docstr">Get a has-one foreign key
+
+ This is used in a deftable call.
+
+ For example:
+
+   (deftable :user 
+     (column :id)
+     (column :name)
+     (column :company_id)
+     (has-one :employer :company :company_id :employees))
+
+ Arguments
+ key -- keyword, the name of the relation
+ table -- keyword, the name of the destination table
+ column -- keyword, the column name in the source table
+ reverse -- keyword, the name of the reverse relation
+
+ Returns
+ A map with :type :has-one set
+ </pre>
   
   
   
@@ -362,7 +468,28 @@ Column
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (infix op)
 </pre>
-  <pre id="var-docstr">Generate an infix expression</pre>
+  <pre id="var-docstr">Generate a function which takes two arguments
+
+For example:
+  (infix "+") generates a function which takes two arguments and will
+compile to a SQL expression like "$left + $right"
+</pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
+  <h2 id="atomic/insert-into">insert-into</h2>
+  <span id="var-type">function</span><br />
+  <pre id="var-usage">Usage: (insert-into table values)
+</pre>
+  <pre id="var-docstr">Get an insert query
+
+Usage:
+  (-&gt; (insert-into :user {:name "Brandon"})
+      (execute db))
+</pre>
   
   
   
@@ -415,6 +542,20 @@ For instance if you have a schema like:
 </div><div id="var-entry">
   <br />
   <hr />
+  <h2 id="atomic/on">on</h2>
+  <span id="var-type">macro</span><br />
+  <pre id="var-usage">Usage: (on &amp; clauses)
+</pre>
+  <pre id="var-docstr">Add an ON clause to a join clause
+
+See "where"
+</pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
   <h2 id="atomic/one">one</h2>
   <span id="var-type">macro</span><br />
   <pre id="var-usage">Usage: (one db entity &amp; options)
@@ -444,7 +585,26 @@ Examples
   <h2 id="atomic/select">select</h2>
   <span id="var-type">var</span><br />
   <pre id="var-usage"></pre>
-  <pre id="var-docstr">get a select query</pre>
+  <pre id="var-docstr">A empty select query
+
+Usage:
+  (-&gt; select
+      (from :user)
+      (where (= :name "Brandon"))
+      (execute db))
+
+</pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
+  <h2 id="atomic/sql">sql</h2>
+  <span id="var-type">function</span><br />
+  <pre id="var-usage">Usage: (sql text &amp; values)
+</pre>
+  <pre id="var-docstr">Generate a SQL expression</pre>
   
   
   
@@ -455,13 +615,77 @@ Examples
   <span id="var-type">macro</span><br />
   <pre id="var-usage">Usage: (tx db &amp; body)
 </pre>
-  <pre id="var-docstr">Perform a transaction</pre>
+  <pre id="var-docstr">Perform a transaction for a database
+
+ When an exception occurs inside of this block, a rollback is executed and the exception is re-thrown.
+
+ For example:
+   (tx db
+     (execute-sql "delete from my_table where id = ?" [5]))
+  
+ </pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
+  <h2 id="atomic/tx-read-only">tx-read-only</h2>
+  <span id="var-type">macro</span><br />
+  <pre id="var-usage">Usage: (tx-read-only db &amp; body)
+</pre>
+  <pre id="var-docstr">Run a block of commands for a database in a read-only transaction wrapper</pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
+  <h2 id="atomic/update">update</h2>
+  <span id="var-type">function</span><br />
+  <pre id="var-usage">Usage: (update table values)
+</pre>
+  <pre id="var-docstr">Get an update query
+
+Usage:
+  (-&gt; (update :user {:name "Brandon"})
+      (where (= :id 5))
+      (execute db))
+</pre>
+  
+  
+  
+</div><div id="var-entry">
+  <br />
+  <hr />
+  <h2 id="atomic/where">where</h2>
+  <span id="var-type">macro</span><br />
+  <pre id="var-usage">Usage: (where query &amp; clauses)
+</pre>
+  <pre id="var-docstr">Add a where clause to a query. 
+
+Arguments
+query -- a query
+clauses* -- one or more clauses
+
+Returns
+query
+</pre>
   
   
   
 </div>
 <h2 id="namespace-name">atomic.localmap</h2>
-<pre id="namespace-docstr"></pre>
+<pre id="namespace-docstr">Mutable thread-local map data structure 
+
+This is useful for isolating state from multiple threads.  Values will be
+garbage collected on thread destruction.
+
+Usage:
+  (let [my-map (localmap/create)]
+    (localmap/set my-map :my-key 25)
+    (localmap/to-map my-map)) ; =&gt; {:my-key 25}
+</pre>
 
 
 <br />
@@ -481,7 +705,12 @@ Examples
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (get localmap key)
 </pre>
-  <pre id="var-docstr">Lookup a key</pre>
+  <pre id="var-docstr">Lookup a key
+
+Arguments
+localmap -- localmap
+key -- the key to lookup
+</pre>
   
   
   
@@ -491,7 +720,13 @@ Examples
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (set localmap key val)
 </pre>
-  <pre id="var-docstr">Set a value for key</pre>
+  <pre id="var-docstr">Set a value for key
+
+Arguments
+localmap -- localmap
+key -- the key 
+val -- the value
+</pre>
   
   
   
@@ -501,7 +736,16 @@ Examples
   <span id="var-type">macro</span><br />
   <pre id="var-usage">Usage: (setdefault localmap key func)
 </pre>
-  <pre id="var-docstr">Set a default value for key</pre>
+  <pre id="var-docstr">Set a default value for key
+
+Arguments
+localmap -- the localmap
+key -- the key
+func -- get the value from this function if the key doesn't exist
+
+Returns
+the defaulted value
+</pre>
   
   
   
@@ -511,7 +755,14 @@ Examples
   <span id="var-type">function</span><br />
   <pre id="var-usage">Usage: (to-map localmap)
 </pre>
-  <pre id="var-docstr">Get a map</pre>
+  <pre id="var-docstr">Get a map
+
+Arguments
+localmap -- the localmap
+
+Returns
+map
+</pre>
   
   
   

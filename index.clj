@@ -2,11 +2,13 @@
  ({:source-url nil,
    :wiki-url "atomic-api.html",
    :name "atomic",
-   :doc nil}
+   :doc
+   "Library to simplify interaction with SQL databases\n\nExample:\n\n  (use 'atomic)\n  (def schema (create-schema))\n\n  ; Describe a user table \n  (deftable \n    :user\n    :id\n    :name\n    (has-many :emails :email :user_id :user))\n\n  (deftable \n    :email\n    :id\n    :address\n    :user_id)\n\n  (def db (create-db \"org.sqlite.JDBC\" \"jdbc:sqlite::memory:\"))\n  (execute-sql db \"create table user (id integer primary key, name text, created_at integer)\")\n  (execute-sql db \"create table email (id integer primary key, user_id integer, address text)\")\n\n  (insert db :user {:id 1 :name \"Brandon\"})\n  (insert db :email {:address \"foo@bar.com\" :user_id 1})\n  (insert db :email {:address \"bar@bar.com\" :user_id 1})\n\n  (println (-> select \n               (from :user)\n               (join :email (on (= :email.user_id :user.id)))\n               (where (= :id 1))\n               (execute db)))\n\n  ; [{:user {:name \"Brandon\" :id 5} :email {:address \"foo@bar.com\" :user_id 1 :id 1}}\n  ;  {:user {:name \"Brandon\" :id 5} :email {:address \"bar@bar.com\" :user_id 1 :id 2}}]\n\n  ; Easy-join graph API (one/many):\n  ; Get the \"Brandon\" record, and join in the related emails\n\n  (println (one db :user :emails (= (:name \"Brandon\")))) \n  ; [{:name \"Brandon\" :id 5 :emails [{:address \"foo@bar.com\" :user_id 1 :id 1} {:address \"bar@bar.com\" :user_id 1 :id 2}]}]\n\n\n"}
   {:source-url nil,
    :wiki-url "atomic.localmap-api.html",
    :name "atomic.localmap",
-   :doc nil}
+   :doc
+   "Mutable thread-local map data structure \n\nThis is useful for isolating state from multiple threads.  Values will be\ngarbage collected on thread destruction.\n\nUsage:\n  (let [my-map (localmap/create)]\n    (localmap/set my-map :my-key 25)\n    (localmap/to-map my-map)) ; => {:my-key 25}\n"}
   {:source-url nil,
    :wiki-url "atomic.util-api.html",
    :name "atomic.util",
@@ -20,7 +22,7 @@
    :wiki-url "/atomic-api.html#atomic/bind",
    :doc "Bind a value to be escaped",
    :var-type "function",
-   :line 358,
+   :line 572,
    :file "src/atomic.clj"}
   {:arglists ([a-keyword & params]),
    :name "column",
@@ -31,7 +33,7 @@
    :doc
    "Define a column\n\nArguments\nname -- string, the key of the column\noptions\n  :initial -- use this value on insert if none is provided \n  :default -- use this value on update if none is provided\n  :name -- the name of the column in the table\n\nReturns\nColumn\n",
    :var-type "function",
-   :line 135,
+   :line 259,
    :file "src/atomic.clj"}
   {:arglists ([query & cols]),
    :name "columns",
@@ -39,79 +41,20 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/columns",
-   :doc "(columns [:u.id [:user :id] ] ",
+   :doc "Specify a list of (columns [:u.id [:user :id] ] ",
    :var-type "function",
-   :line 315,
+   :line 509,
    :file "src/atomic.clj"}
-  {:arglists ([schema query]),
-   :name "compile-delete",
+  {:arglists ([query schema]),
+   :name "compile-query",
    :namespace "atomic",
    :source-url nil,
    :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-delete",
-   :doc "Compile a delete query",
+   :wiki-url "/atomic-api.html#atomic/compile-query",
+   :doc
+   "Compile a query.\n\nArguments\nquery -- map, the query\n\nReturns\nA map with the following keys\n  :text -- string, the SQL text\n  :bind -- list, a list of literals to bind\n",
    :var-type "function",
-   :line 535,
-   :file "src/atomic.clj"}
-  {:arglists ([query expr]),
-   :name "compile-expr",
-   :namespace "atomic",
-   :source-url nil,
-   :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-expr",
-   :doc "compile a where expression",
-   :var-type "function",
-   :line 380,
-   :file "src/atomic.clj"}
-  {:arglists ([schema query]),
-   :name "compile-from-clause",
-   :namespace "atomic",
-   :source-url nil,
-   :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-from-clause",
-   :doc "Get the 'FROM' part of a select query",
-   :var-type "function",
-   :line 442,
-   :file "src/atomic.clj"}
-  {:arglists ([schema query]),
-   :name "compile-insert",
-   :namespace "atomic",
-   :source-url nil,
-   :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-insert",
-   :doc "Compile an insert query",
-   :var-type "function",
-   :line 502,
-   :file "src/atomic.clj"}
-  {:arglists ([query kw]),
-   :name "compile-keyword-expr",
-   :namespace "atomic",
-   :source-url nil,
-   :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-keyword-expr",
-   :doc "Compile a keyword where expr",
-   :var-type "function",
-   :line 364,
-   :file "src/atomic.clj"}
-  {:arglists ([schema query]),
-   :name "compile-select",
-   :namespace "atomic",
-   :source-url nil,
-   :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-select",
-   :doc "Compile a select query",
-   :var-type "function",
-   :line 456,
-   :file "src/atomic.clj"}
-  {:arglists ([schema query]),
-   :name "compile-update",
-   :namespace "atomic",
-   :source-url nil,
-   :raw-source-url nil,
-   :wiki-url "/atomic-api.html#atomic/compile-update",
-   :doc "Compile an insert query",
-   :var-type "function",
-   :line 524,
+   :line 759,
    :file "src/atomic.clj"}
   {:arglists ([db table props]),
    :name "create",
@@ -121,7 +64,7 @@
    :wiki-url "/atomic-api.html#atomic/create",
    :doc "Create a row, returning its insert ID",
    :var-type "function",
-   :line 702,
+   :line 925,
    :file "src/atomic.clj"}
   {:arglists ([driver url & opts]),
    :name "create-db",
@@ -129,9 +72,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/create-db",
-   :doc "Create a new db",
+   :doc
+   "Create a new db instance.\n\nA db is a handle to a schema and a database URL.  \n\nCalls to (execute db... ) and (execute-sql db) will lazily create and\nmaintain thread-local connections \n",
    :var-type "function",
-   :line 16,
+   :line 75,
    :file "src/atomic.clj"}
   {:arglists ([]),
    :name "create-schema",
@@ -139,9 +83,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/create-schema",
-   :doc "create a schema object",
+   :doc
+   "Create a schema object.\n\nSchema objects store table and foreign key definitions.  For simple\napplications this doesn't need to be called directly, usually you\ncan use the default global schema object.  This is useful if you need to\nmaintain multiple, conflicting table definitions in one\napplication. \n\nExample:\n  ; Create a schema object:\n  (def my-schema (create-schema))\n\n  ; Use my-schema in :my_table's definition:\n  (deftable :my_table {:schema my-schema}))\n",
    :var-type "function",
-   :line 8,
+   :line 53,
    :file "src/atomic.clj"}
   {:arglists ([key & opts]),
    :name "deftable",
@@ -149,9 +94,21 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/deftable",
-   :doc "Add a table to a schema",
+   :doc
+   "Define a table\n\nThis has a couple of argument forms\n\nHere are some examples:\n  (deftable :company\n    :id\n    :title)\n   \n  (deftable :company\n    (column :id)\n    (column :title)\n    (has-many :employees :user :company_id)) \n\n  (deftable :company\n    (column :id)\n    (column :title)\n    {:schema some-schema}) \n\nThe first column specified defaults to the primary-key column.\n\n",
    :var-type "function",
-   :line 194,
+   :line 328,
+   :file "src/atomic.clj"}
+  {:arglists ([a-key]),
+   :name "deftype?",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/deftype?",
+   :doc
+   "Create a function which checks the :type of a map\n\nThis is useful for storing casual types in maps. \n\nFor example \"(deftype? car)\" will define a function named \"car?\" which checks its argument\nfor having the :type key set to :car \n\nArguments\na-key -- symbol, the name of the keyword and defined function\n",
+   :var-type "macro",
+   :line 278,
    :file "src/atomic.clj"}
   {:arglists ([query db]),
    :name "execute",
@@ -161,7 +118,7 @@
    :wiki-url "/atomic-api.html#atomic/execute",
    :doc "Run a query against an db",
    :var-type "function",
-   :line 555,
+   :line 778,
    :file "src/atomic.clj"}
   {:arglists ([db sql] [db sql params]),
    :name "execute-sql",
@@ -169,9 +126,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/execute-sql",
-   :doc "Execute a query",
+   :doc
+   "Execute a SQL query.\n\nArguments\ndb -- db\nsql -- string, a SQL query\nparams -- [literals], a list of bind values \n\nReturns\nA map with the following keys\n :rows -- a list of row tuples if any\n :update-count -- int, the number of updated rows if any\n :generated-keys -- list, a list of generated keys (insert / sequence IDs).  Usually like [[25]] \n",
    :var-type "function",
-   :line 103,
+   :line 198,
    :file "src/atomic.clj"}
   {:arglists ([key table column] [key table column reverse]),
    :name "has-many",
@@ -179,9 +137,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/has-many",
-   :doc "Get a has-many foreign key",
+   :doc
+   "Get a has-many foreign key\n\n This is used in a deftable call.\n\n For example:\n\n   (deftable :user \n     (column :id)\n     (column :name)\n     (column :company_id))\n\n  (deftable :company\n     (column :id)\n     (column :title)\n     (has-many :employees :user :company_id :employer))\n\n Arguments\n key -- keyword, the name of the relation\n table -- keyword, the name of the destination table\n column -- keyword, the column name in the destination table\n reverse -- keyword, the name of the reverse relation\n\n Returns\n A map with :type :has-many set \n ",
    :var-type "function",
-   :line 55,
+   :line 131,
    :file "src/atomic.clj"}
   {:arglists ([key table column] [key table column reverse]),
    :name "has-one",
@@ -189,9 +148,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/has-one",
-   :doc "Get a has-one foreign key",
+   :doc
+   "Get a has-one foreign key\n\n This is used in a deftable call.\n\n For example:\n\n   (deftable :user \n     (column :id)\n     (column :name)\n     (column :company_id)\n     (has-one :employer :company :company_id :employees))\n\n Arguments\n key -- keyword, the name of the relation\n table -- keyword, the name of the destination table\n column -- keyword, the column name in the source table\n reverse -- keyword, the name of the reverse relation\n\n Returns\n A map with :type :has-one set\n ",
    :var-type "function",
-   :line 45,
+   :line 101,
    :file "src/atomic.clj"}
   {:arglists ([op]),
    :name "infix",
@@ -199,9 +159,21 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/infix",
-   :doc "Generate an infix expression",
+   :doc
+   "Generate a function which takes two arguments\n\nFor example:\n  (infix \"+\") generates a function which takes two arguments and will\ncompile to a SQL expression like \"$left + $right\"\n",
    :var-type "function",
-   :line 255,
+   :line 410,
+   :file "src/atomic.clj"}
+  {:arglists ([table values]),
+   :name "insert-into",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/insert-into",
+   :doc
+   "Get an insert query\n\nUsage:\n  (-> (insert-into :user {:name \"Brandon\"})\n      (execute db))\n",
+   :var-type "function",
+   :line 452,
    :file "src/atomic.clj"}
   {:arglists ([db table relation-paths result-set]),
    :name "join-to",
@@ -212,7 +184,7 @@
    :doc
    "Join a set of dotted relation-paths to a result set.\n\nIn other words, fill-in a list of related row objects.\n\nFor instance if you have a schema like:\n\n  driver (id, name)\n  car (id, driver_id, garage_id, name)\n  garage (id, house_id)\n  house (id)\n\n(join-to db :review [:user :user.emails] [{:id 1 :user_id 3}]) =>\n  [{:id 1 :user_id 3 :user { :id 3 :emails [{:id 1 :address \"foo@bar.com\"}]}}]\n",
    :var-type "function",
-   :line 594,
+   :line 817,
    :file "src/atomic.clj"}
   {:arglists ([db entity where-parts]),
    :name "make-query",
@@ -222,7 +194,7 @@
    :wiki-url "/atomic-api.html#atomic/make-query",
    :doc "make a query given an entity and some where-conditions",
    :var-type "function",
-   :line 573,
+   :line 796,
    :file "src/atomic.clj"}
   {:arglists ([db entity & options]),
    :name "many",
@@ -232,7 +204,17 @@
    :wiki-url "/atomic-api.html#atomic/many",
    :doc "Get many items",
    :var-type "macro",
-   :line 692,
+   :line 915,
+   :file "src/atomic.clj"}
+  {:arglists ([& clauses]),
+   :name "on",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/on",
+   :doc "Add an ON clause to a join clause\n\nSee \"where\"\n",
+   :var-type "macro",
+   :line 521,
    :file "src/atomic.clj"}
   {:arglists ([db entity & options]),
    :name "one",
@@ -243,26 +225,71 @@
    :doc
    "Get one item\n\nExamples\n\n  : Load a user with id 5\n  (one db :user (> :id 5)) \n\n  ; Load a user with id 3, and review and review.business joined\n  (one db :user (= :id 3) :review :review.business) \n  \n  ; Load a user with id 5 and email joined\n  (one db :user (= :id 5) :email) \n  \n  ; Load a user with id 5 and email joined\n  (one db :user (= :id 5) :emails)) \n",
    :var-type "macro",
-   :line 666,
+   :line 889,
    :file "src/atomic.clj"}
   {:file "src/atomic.clj",
    :raw-source-url nil,
    :source-url nil,
    :wiki-url "/atomic-api.html#atomic/select",
    :namespace "atomic",
-   :line 271,
+   :line 436,
    :var-type "var",
-   :doc "get a select query",
+   :doc
+   "A empty select query\n\nUsage:\n  (-> select\n      (from :user)\n      (where (= :name \"Brandon\"))\n      (execute db))\n\n",
    :name "select"}
+  {:arglists ([text & values]),
+   :name "sql",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/sql",
+   :doc "Generate a SQL expression",
+   :var-type "function",
+   :line 565,
+   :file "src/atomic.clj"}
   {:arglists ([db & body]),
    :name "tx",
    :namespace "atomic",
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic/tx",
-   :doc "Perform a transaction",
+   :doc
+   "Perform a transaction for a database\n\n When an exception occurs inside of this block, a rollback is executed and the exception is re-thrown.\n\n For example:\n   (tx db\n     (execute-sql \"delete from my_table where id = ?\" [5]))\n  \n ",
    :var-type "macro",
-   :line 122,
+   :line 229,
+   :file "src/atomic.clj"}
+  {:arglists ([db & body]),
+   :name "tx-read-only",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/tx-read-only",
+   :doc
+   "Run a block of commands for a database in a read-only transaction wrapper",
+   :var-type "macro",
+   :line 248,
+   :file "src/atomic.clj"}
+  {:arglists ([table values]),
+   :name "update",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/update",
+   :doc
+   "Get an update query\n\nUsage:\n  (-> (update :user {:name \"Brandon\"})\n      (where (= :id 5))\n      (execute db))\n",
+   :var-type "function",
+   :line 464,
+   :file "src/atomic.clj"}
+  {:arglists ([query & clauses]),
+   :name "where",
+   :namespace "atomic",
+   :source-url nil,
+   :raw-source-url nil,
+   :wiki-url "/atomic-api.html#atomic/where",
+   :doc
+   "Add a where clause to a query. \n\nArguments\nquery -- a query\nclauses* -- one or more clauses\n\nReturns\nquery\n",
+   :var-type "macro",
+   :line 534,
    :file "src/atomic.clj"}
   {:arglists ([]),
    :name "create",
@@ -272,7 +299,7 @@
    :wiki-url "/atomic-api.html#atomic.localmap/create",
    :doc "Create a thread local-map",
    :var-type "function",
-   :line 4,
+   :line 15,
    :file "src/atomic/localmap.clj"}
   {:arglists ([localmap key]),
    :name "get",
@@ -280,9 +307,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic.localmap/get",
-   :doc "Lookup a key",
+   :doc
+   "Lookup a key\n\nArguments\nlocalmap -- localmap\nkey -- the key to lookup\n",
    :var-type "function",
-   :line 16,
+   :line 39,
    :file "src/atomic/localmap.clj"}
   {:arglists ([localmap key val]),
    :name "set",
@@ -290,9 +318,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic.localmap/set",
-   :doc "Set a value for key",
+   :doc
+   "Set a value for key\n\nArguments\nlocalmap -- localmap\nkey -- the key \nval -- the value\n",
    :var-type "function",
-   :line 26,
+   :line 61,
    :file "src/atomic/localmap.clj"}
   {:arglists ([localmap key func]),
    :name "setdefault",
@@ -300,9 +329,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic.localmap/setdefault",
-   :doc "Set a default value for key",
+   :doc
+   "Set a default value for key\n\nArguments\nlocalmap -- the localmap\nkey -- the key\nfunc -- get the value from this function if the key doesn't exist\n\nReturns\nthe defaulted value\n",
    :var-type "macro",
-   :line 6,
+   :line 20,
    :file "src/atomic/localmap.clj"}
   {:arglists ([localmap]),
    :name "to-map",
@@ -310,9 +340,10 @@
    :source-url nil,
    :raw-source-url nil,
    :wiki-url "/atomic-api.html#atomic.localmap/to-map",
-   :doc "Get a map",
+   :doc
+   "Get a map\n\nArguments\nlocalmap -- the localmap\n\nReturns\nmap\n",
    :var-type "function",
-   :line 21,
+   :line 49,
    :file "src/atomic/localmap.clj"}
   {:arglists ([a-seq]),
    :name "all-but-last",
