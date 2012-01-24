@@ -1,4 +1,49 @@
 (ns atomic
+  "Library to simplify interaction with SQL databases
+
+  Example:
+
+    (use 'atomic)
+    (def schema (create-schema))
+
+    ; Describe a user table 
+    (deftable 
+      :user
+      :id
+      :name
+      (has-many :emails :email :user_id :user))
+
+    (deftable 
+      :email
+      :id
+      :address
+      :user_id)
+
+    (def db (create-db \"org.sqlite.JDBC\" \"jdbc:sqlite::memory:\"))
+    (execute-sql db \"create table user (id integer primary key, name text, created_at integer)\")
+    (execute-sql db \"create table email (id integer primary key, user_id integer, address text)\")
+
+    (insert db :user {:id 1 :name \"Brandon\"})
+    (insert db :email {:address \"foo@bar.com\" :user_id 1})
+    (insert db :email {:address \"bar@bar.com\" :user_id 1})
+
+    (println (-> select 
+                 (from :user)
+                 (join :email (on (= :email.user_id :user.id)))
+                 (where (= :id 1))
+                 (execute db)))
+
+    ; [{:user {:name \"Brandon\" :id 5} :email {:address \"foo@bar.com\" :user_id 1 :id 1}}
+    ;  {:user {:name \"Brandon\" :id 5} :email {:address \"bar@bar.com\" :user_id 1 :id 2}}]
+
+    ; Easy-join graph API (one/many):
+    ; Get the \"Brandon\" record, and join in the related emails
+
+    (println (one db :user :emails (= (:name \"Brandon\")))) 
+    ; [{:name \"Brandon\" :id 5 :emails [{:address \"foo@bar.com\" :user_id 1 :id 1} {:address \"bar@bar.com\" :user_id 1 :id 2}]}]
+
+
+  "
   (:refer-clojure :exclude [compile])
   (:use atomic.util)
   (:require [atomic.localmap :as localmap]
@@ -6,7 +51,21 @@
             clojure.walk))
 
 (defn create-schema
-  "create a schema object"
+  "Create a schema object.
+
+  Schema objects store table and foreign key definitions.  For simple
+  applications this doesn't need to be called directly, usually you
+  can use the default global schema object.  This is useful if you need to
+  maintain multiple, conflicting table definitions in one
+  application. 
+
+  Example:
+    ; Create a schema object:
+    (def my-schema (create-schema))
+
+    ; Use my-schema in :my_table's definition:
+    (deftable :my_table {:schema my-schema}))
+  "
   []
   {:tables (atom {})
    :foreign-keys (atom {})})
@@ -14,7 +73,13 @@
 (def +schema+ (create-schema))
 
 (defn create-db 
-  "Create a new db"
+  "Create a new db instance.
+  
+  A db is a handle to a schema and a database URL.  
+
+  Calls to (execute db... ) and (execute-sql db) will lazily create and
+  maintain thread-local connections 
+  "
   [driver url & opts] 
   {
    :driver driver
@@ -33,17 +98,28 @@
   [schema table-key fk]
   (swap! (schema :foreign-keys) assoc [table-key (:key fk)] fk))
 
-(def foreign-key
-  {:type :foreign-key
-   :key nil
-   :foreign-key-type nil
-   :dst-table nil
-   :dst-col nil
-   :src-table nil
-   :src-col nil})
-
 (defn has-one 
-  "Get a has-one foreign key"
+  "Get a has-one foreign key
+ 
+  This is used in a deftable call.
+
+  For example:
+
+    (deftable :user 
+      (column :id)
+      (column :name)
+      (column :company_id)
+      (has-one :employer :company :company_id :employees))
+
+  Arguments
+  key -- keyword, the name of the relation
+  table -- keyword, the name of the destination table
+  column -- keyword, the column name in the source table
+  reverse -- keyword, the name of the reverse relation
+
+  Returns
+  A map with :type :has-one set
+  "
   ([key table column] (has-one key table column nil))
   ([key table column reverse]
     {:type :has-one
@@ -53,7 +129,31 @@
      :reverse reverse}))
 
 (defn has-many 
-  "Get a has-many foreign key"
+  "Get a has-many foreign key
+ 
+  This is used in a deftable call.
+
+  For example:
+
+    (deftable :user 
+      (column :id)
+      (column :name)
+      (column :company_id))
+
+   (deftable :company
+      (column :id)
+      (column :title)
+      (has-many :employees :user :company_id :employer))
+
+  Arguments
+  key -- keyword, the name of the relation
+  table -- keyword, the name of the destination table
+  column -- keyword, the column name in the destination table
+  reverse -- keyword, the name of the reverse relation
+
+  Returns
+  A map with :type :has-many set 
+  "
   ([key table column] 
    (has-many key table column nil))
   ([key table column reverse]
@@ -62,11 +162,6 @@
       :column column
       :table table
       :reverse reverse}))
-
-(defonce rollback-class 
-  (get-proxy-class java.lang.Exception))
-
-(defn rollback [] (throw rollback-class))
 
 (defn- create-connection
   "Create a connection for an db"
@@ -101,7 +196,19 @@
       (persistent! result))) 
 
 (defn execute-sql 
-  "Execute a query"
+  "Execute a SQL query.
+  
+  Arguments
+  db -- db
+  sql -- string, a SQL query
+  params -- [literals], a list of bind values 
+
+  Returns
+  A map with the following keys
+   :rows -- a list of row tuples if any
+   :update-count -- int, the number of updated rows if any
+   :generated-keys -- list, a list of generated keys (insert / sequence IDs).  Usually like [[25]] 
+  "
   ([db sql] (execute-sql db sql []))
   ([db sql params]
    ;(println sql params)
@@ -120,17 +227,34 @@
                             (resultset-seq2 (.getGeneratedKeys stmt)))})))))
 
 (defmacro tx 
-  "Perform a transaction" 
+  "Perform a transaction for a database
+ 
+  When an exception occurs inside of this block, a rollback is executed and the exception is re-thrown.
+
+  For example:
+    (tx db
+      (execute-sql \"delete from my_table where id = ?\" [5]))
+   
+  " 
   [db & body] 
-  `(       
-    (execute-sql ~db "BEGIN" [])
+  `((execute-sql ~db "BEGIN" [])
     (try
       ~@body
       (execute-sql ~db "COMMIT")
       (catch Exception the-exception#
         (execute-sql ~db "ROLLBACK")
-        (throw the-exception#)))
-    ))
+        (throw the-exception#)))))
+
+(defmacro tx-read-only 
+  "Run a block of commands for a database in a read-only transaction wrapper" 
+  [db & body] 
+  `((execute-sql ~db "BEGIN" [])
+    (try
+      ~@body
+      (execute-sql ~db "ROLLBACK")
+      (catch Exception the-exception#
+        (execute-sql ~db "ROLLBACK")
+        (throw the-exception#)))))
 
 (defn column 
   "Define a column
@@ -152,6 +276,16 @@
          :primary? false} (apply hash-map params)))
 
 (defmacro deftype?
+  "Create a function which checks the :type of a map
+
+  This is useful for storing casual types in maps. 
+
+  For example \"(deftype? car)\" will define a function named \"car?\" which checks its argument
+  for having the :type key set to :car 
+
+  Arguments
+  a-key -- symbol, the name of the keyword and defined function
+  "
   [a-key]
   (let [kw (keyword (name a-key))] 
      `(defn-
@@ -162,12 +296,12 @@
 
 (deftype? column)
 (deftype? table)
+(deftype? bind)
 (deftype? relation)
 (deftype? infix)
 (deftype? prefix)
 (deftype? unary)
 (deftype? on)
-(deftype? foreign-key)
 (deftype? where)
 (deftype? relation)
 (deftype? select)
@@ -192,7 +326,28 @@
     cols1))
 
 (defn deftable
-  "Add a table to a schema"
+  "Define a table
+
+  This has a couple of argument forms
+
+  Here are some examples:
+    (deftable :company
+      :id
+      :title)
+     
+    (deftable :company
+      (column :id)
+      (column :title)
+      (has-many :employees :user :company_id)) 
+
+    (deftable :company
+      (column :id)
+      (column :title)
+      {:schema some-schema}) 
+
+  The first column specified defaults to the primary-key column.
+
+  "
   [key & opts]
   (let [columns (parse-columns opts)
         opts0 (->> (cons {:schema +schema+} opts)
@@ -253,12 +408,23 @@
                                (apply infix-op more))))
 
 (defn infix 
-  "Generate an infix expression"
+  "Generate a function which takes two arguments
+  
+  For example:
+    (infix \"+\") generates a function which takes two arguments and will
+  compile to a SQL expression like \"$left + $right\"
+  "
   [op]
   (fn [l r] {:type :infix :op op :left l :right r}))
 
 (defonce infix-operators (atom '{
                                  = (atomic/infix "=")
+                                 & (atomic/infix "&")
+                                 | (atomic/infix "|")
+                                 \^ (atomic/infix "^")
+                                 like (atomic/infix "LIKE")
+                                 rlike (atomic/infix "RLIKE")
+                                 is (atomic/infix "IS")
                                  + (atomic/infix "+")
                                  / (atomic/infix "/")
                                  * (atomic/infix "*")
@@ -267,9 +433,16 @@
                                  != (atomic/infix "!=")
                                  <= (atomic/infix "<=")}))
 
-
 (def select 
-  "get a select query"
+  "A empty select query
+  
+  Usage:
+    (-> select
+        (from :user)
+        (where (= :name \"Brandon\"))
+        (execute db))
+
+  "
   {:type :select
    :relations []
    :where []
@@ -277,12 +450,25 @@
    :group-by []})
 
 (defn insert-into
+  "Get an insert query
+  
+  Usage:
+    (-> (insert-into :user {:name \"Brandon\"})
+        (execute db))
+  " 
   [table values]
   {:type :insert
    :table table
    :values values})
 
 (defn update
+  "Get an update query
+  
+  Usage:
+    (-> (update :user {:name \"Brandon\"})
+        (where (= :id 5))
+        (execute db))
+  "
   [table values]
   {:type :update
    :table table
@@ -290,6 +476,13 @@
    :where []})
 
 (defn delete [table] 
+  "Get a delete query
+  
+  Usage:
+    (-> (delete :user)
+        (where (= :id 5))
+        (execute db))
+  "
   {:type :delete
    :table table
    :where []})
@@ -306,6 +499,7 @@
   [query
    relation-name
    & exprs]
+  "Create a from relation"
   (let [[on-exprs attr-exprs] (classify on? exprs)
         on-query (apply infix-op "AND" (flatten (map :items on-exprs)))
         new-relation (apply conj relation {:as relation-name :source-table relation-name :on on-query} attr-exprs)
@@ -313,18 +507,22 @@
     new-query))
 
 (defn columns
-  "(columns [:u.id [:user :id] ] "
+  "Specify a list of (columns [:u.id [:user :id] ] "
   [query & cols]
   (assoc query 
          :columns 
          (doall (for [[lhs rhs] (partition 2 cols)]
                   {:expr lhs :key-path rhs}))))
 
-(defn parse-dsl 
+(defn- parse-dsl 
   [clauses]
   (clojure.walk/postwalk-replace @infix-operators clauses))
 
 (defmacro on 
+  "Add an ON clause to a join clause
+  
+  See \"where\"
+  "
   [& clauses]
   `(hash-map :type :on
              :items (list ~@(parse-dsl clauses))))
@@ -334,12 +532,21 @@
 (defn left-join [rel & exprs] (apply from rel (cons {:is-left-outer true} exprs)))
 
 (defmacro where 
+  "Add a where clause to a query. 
+
+  Arguments
+  query -- a query
+  clauses* -- one or more clauses
+
+  Returns
+  query
+  "
   [query & clauses]
   `(assoc ~query :where (concat (:where ~query) (list ~@(parse-dsl clauses)))))
 
-(defn compile-opt-clause [schema query] [])
+(defn- compile-opt-clause [schema query] [])
 
-(defn get-columns 
+(defn- get-columns 
   [schema query]
   (if (not (= nil (:columns query)))
     (:columns query)
@@ -355,29 +562,35 @@
                     expr (keyword (format "%s.%s" rel-alias col-name))]
                 {:key-path key-path :expr expr}))))))))
 
+(defn sql
+  "Generate a SQL expression"
+  [text & values] 
+  {:type :sql
+   :text text
+   :values values})
+
 (defn bind 
   "Bind a value to be escaped"
   [v]
   {:type :bind :value v})
 
-(defn bind? [p] (and (map? p) (= (:type p) :bind)))
-(defn compile-keyword-expr 
+(defn- compile-keyword-expr 
   "Compile a keyword where expr"
   [query kw] 
   (name kw))
 
-(defn compile-literal-expr 
+(defn- compile-literal-expr 
   [subject]
   [(bind subject)])
 
-(defn compile-sequential-expr
+(defn- compile-sequential-expr
   [query expr]
   (concat 
     ["("]
     (interpose [","] (apply concat (map compile-literal-expr expr)))
     [")"]))
 
-(defn compile-expr 
+(defn- compile-expr 
   "compile a where expression"
   [query expr]
   (cond 
@@ -400,9 +613,9 @@
                     [")"])
     :else (throw (Exception. (str "unexpected expression: " expr)))))
 
-(defn compile-order-clause [schema query] [])
+(defn- compile-order-clause [schema query] [])
 
-(defn compile-where-clause 
+(defn- compile-where-clause 
   [schema query] 
   (if (empty? (:where query))
     [] ; empty where
@@ -410,14 +623,14 @@
           where-exprs (apply concat (interpose [" AND "] where-exprs0))]
       (cons " WHERE " where-exprs))))
 
-(defn compile-col-clause [schema query] 
+(defn- compile-col-clause [schema query] 
   (interpose ", "
     (for [column (get-columns schema query)]
       (compile-expr query (:expr column)))))
 
-(defn compile-limit-clause [schema query] [])
+(defn- compile-limit-clause [schema query] [])
 
-(defn partition-bind 
+(defn- partition-bind 
   [exprs] 
   (let [bind-pair (fn [e] (if (bind? e) ["?" [(:value e)]] [e []]))
         exprs0 (map bind-pair exprs)
@@ -425,13 +638,13 @@
         binds (flatten (map second exprs0))]
     [sql binds]))
 
-(defn compile-on
+(defn- compile-on
   [schema relation]
   (if (= nil (:on relation))
     []
     [" ON " (compile-expr schema (:on relation))]))
 
-(defn compile-relation
+(defn- compile-relation
   [schema relation]
   ; fix-me: compile sub-selects here.
   (let [relation-name (:name (lookup-table schema (:source-table relation)))
@@ -439,7 +652,7 @@
         relation-part [relation-name " AS " relation-alias]]
     (concat relation-part (compile-on schema relation))))
 
-(defn compile-from-clause 
+(defn- compile-from-clause 
   "Get the 'FROM' part of a select query"
   [schema query]
   (if (:relations query)
@@ -453,7 +666,7 @@
             [" INNER JOIN " (compile-relation schema relation)]))]))
          []))
 
-(defn compile-select 
+(defn- compile-select 
   "Compile a select query" 
   [schema query] 
   (let [exprs (flatten [["SELECT "] 
@@ -499,7 +712,7 @@
         (interpose "," (for [[k v] colvals] (bind v)))
         [")"]))))
 
-(defn compile-insert 
+(defn- compile-insert 
   "Compile an insert query"
   [schema query]
   (let [exprs (apply concat [["INSERT INTO " (name (:table query)) " "]
@@ -509,7 +722,7 @@
      :bind bind
      :column-key-paths []}))
 
-(defn compile-update-values
+(defn- compile-update-values
   [schema query]
   (let [values0 (:values query)
         defaults (get-col-vals schema (:table query) :default)
@@ -521,7 +734,7 @@
                         (for [[k v] values]
                           [(name k) " = " (bind v)]))))))
 
-(defn compile-update 
+(defn- compile-update 
   "Compile an insert query"
   [schema query]
   (let [exprs (apply concat [["UPDATE " (name (:table query)) " "]
@@ -532,7 +745,7 @@
      :bind bind
      :column-key-paths []}))
 
-(defn compile-delete 
+(defn- compile-delete 
   "Compile a delete query"
   [schema query]
   (let [exprs (apply concat 
@@ -544,6 +757,16 @@
      :column-key-paths []}))
 
 (defn compile-query
+  "Compile a query.
+
+  Arguments
+  query -- map, the query
+
+  Returns
+  A map with the following keys
+    :text -- string, the SQL text
+    :bind -- list, a list of literals to bind
+  "
   [query schema]
   (cond 
     (select? query) (compile-select schema query)

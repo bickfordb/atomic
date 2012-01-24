@@ -181,4 +181,11 @@
         (create db :business {:name "B"}))
     (is (= 1 (count (many db :business))))))
 
+(deftest tx-read-only-test
+  "Test transactions"
+         (let [db (empty-db)]
+    (tx-read-only db
+                  (create db :business {:name "B"}))
+    (is (= 0 (count (many db :business))))))
+
 
