@@ -11,6 +11,8 @@ A small SQL library for Clojure
 
 ## Usage
 
+API documentation is [here](http://bickfordb.github.com/atomic)
+
 ```clj
 (use 'atomic)
 (def schema (create-schema))
