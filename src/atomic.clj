@@ -88,6 +88,7 @@
    :local (localmap/create)})
 
 (defonce +jdbc-loaded+ (atom #{}))
+
 (defn- load-jdbc-driver
   [driver-path]
   (when (not (contains? @+jdbc-loaded+ driver-path))
@@ -311,8 +312,6 @@
 (deftype? has-one)
 (deftype? has-many)
 
-
-
 (defn- parse-columns
   [opts]
   (let [col-opts (filter #(or (keyword? %1) (column? %1)) opts)
@@ -417,11 +416,16 @@
   [op]
   (fn [l r] {:type :infix :op op :left l :right r}))
 
+
 (defonce infix-operators (atom '{
                                  = (atomic/infix "=")
-                                 & (atomic/infix "&")
-                                 | (atomic/infix "|")
-                                 \^ (atomic/infix "^")
+                                 and (atomic/infix "AND")
+                                 or (atomic/infix "OR")
+                                 not (atomic/prefix "NOT")
+                                 bit-and (atomic/infix "&")
+                                 bit-or (atomic/infix "|")
+                                 bit-not (atomic/prefix "~")
+                                 bit-xor (atomic/infix "^")
                                  like (atomic/infix "LIKE")
                                  rlike (atomic/infix "RLIKE")
                                  is (atomic/infix "IS")
@@ -514,7 +518,7 @@
          (doall (for [[lhs rhs] (partition 2 cols)]
                   {:expr lhs :key-path rhs}))))
 
-(defn- parse-dsl 
+(defn parse-dsl 
   [clauses]
   (clojure.walk/postwalk-replace @infix-operators clauses))
 
@@ -905,7 +909,7 @@
   "
   [db entity & options]
   `(let [where# (list ~@(parse-dsl (filter not-keyword? options)))
-         join-key-paths# (filter keyword? (list ~@options)) 
+         join-key-paths# (list ~@(filter keyword? options))
          query# (make-query ~db ~entity where#)
          result# (execute query# ~db)
          row# (first (:rows result#))
@@ -916,7 +920,7 @@
   "Get many items"
   [db entity & options]
   `(let [where# (list ~@(parse-dsl (filter not-keyword? options)))
-         join-key-paths# (filter keyword? (list ~@options)) 
+         join-key-paths# (list ~@(filter keyword? options))
          query# (make-query ~db ~entity where#)
          result# (execute query# ~db)
          joined-rows# (join-to ~db ~entity join-key-paths# (:rows result#))]
@@ -929,4 +933,3 @@
     (execute db)
     (:insert-id)))
      
-

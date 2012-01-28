@@ -146,3 +146,6 @@
                           :else v)))]
         (recur m1 (rest kvs))))))
 
+(defn timestamp 
+  "Helper function to get the number of seconds since the epoch"
+  [] (/ (System/currentTimeMillis) 1000.0))

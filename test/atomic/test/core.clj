@@ -2,6 +2,7 @@
   (:use atomic.util)
   (:use clojure.core)
   (:use clojure.test)
+  (:use atomic.migrations)
   (:use atomic))
 
 (deftable 
@@ -16,7 +17,6 @@
   :comment
   (has-one :reviewer :user :user_id :reviews))
 
-(defn timestamp [] (/ (System/currentTimeMillis) 1000.0))
 
 
 (deftable 
@@ -188,4 +188,19 @@
                   (create db :business {:name "B"}))
     (is (= 0 (count (many db :business))))))
 
+(defn create-baz-table
+  [db]
+  (create-table db :baz {:id {:type "integer" :primary? true}
+                         :name {:type "varchar(128)"}}))
+
+(defn create-baz-index 
+  [db] (create-index db :baz [:name]))
+
+(deftest migrations-test
+  (let [db (memory-db)]
+    (run-all-migrations 
+      db
+      {:id 1 :up create-baz-table}
+      {:id 2 :up create-baz-index}
+      )))
 
