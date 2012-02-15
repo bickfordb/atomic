@@ -878,14 +878,14 @@
                 items (get-in2 (all-but-last relation-path) @result-set0)
                 local-keys (map local-primary-key items)
                 rows (map relation-key (:rows (-> select 
-                       (from remote-table {:as relation-key})
+                                                (from remote-table {:as relation-key})
                        (where (in (join-keywords relation-key column) local-keys))
                        (execute db))))
                 local-primary-key-to-rows (get-key-to-seq rows column)
-                get-val (fn [item] (get local-primary-key-to-rows (get item local-primary-key [])))
+                get-val (fn [item] (get local-primary-key-to-rows (get item local-primary-key []) []))
                 replace-item (fn [item] (assoc item relation-key (get-val item)))
                 new-result-set (map-in replace-item (all-but-last relation-path) @result-set0)]
-            (reset!  result-set0 new-result-set)
+            (reset! result-set0 new-result-set)
           ) 
           :else (throw (Exception. (format "unexpected foreign key type: %s" foreign-key-type))))))
     @result-set0))
@@ -912,8 +912,7 @@
          join-key-paths# (list ~@(filter keyword? options))
          query# (make-query ~db ~entity where#)
          result# (execute query# ~db)
-         row# (first (:rows result#))
-         joined-rows# (join-to ~db ~entity join-key-paths# [row#])]
+         joined-rows# (join-to ~db ~entity join-key-paths# (take 1 (:rows result#)))]
        (first joined-rows#)))
 
 (defmacro many 

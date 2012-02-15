@@ -17,17 +17,12 @@
   :comment
   (has-one :reviewer :user :user_id :reviews))
 
-
-
 (deftable 
   :business
   (column :id :primary? true)
   (column :name :initial "Something")
   (column :updated_at :initial timestamp :default timestamp)
   (column :created_at :initial timestamp))
-
-
-
 
 (defn memory-db
   []
@@ -56,6 +51,7 @@
     (execute-sql db "insert into user (id, name) values (?, ?)" [1 "Brandon"])
     (execute-sql db "insert into user (id, name) values (?, ?)" [2 "Alice"])
     (execute-sql db "insert into user (id, name) values (?, ?)" [3 "Bob"])
+    (execute-sql db "insert into user (id, name) values (?, ?)" [4 "Charlie"])
     (is (= [[1 "Brandon"]]
            (:rows (execute-sql db "select id, name from user where id = ?" [1]))))
     (execute-sql db "insert into review (id, user_id, comment) values (?, ?, ?)" [99 1 "liked it"])
@@ -84,6 +80,12 @@
       (is (= 
             (:name (:reviewer a-review))
             "Brandon")))
+    (let [u (one db :user (= :id 5) :reviews)] 
+      (is (nil? u)))
+    (let [u (one db :user (= :id 4) :reviews)] 
+      (is (= (:id u) 4))
+      (is (not (nil? (:reviews u))))
+      (is (= (:reviews u) [])))
   ))
 
 (deftest parse-relation-paths-test
