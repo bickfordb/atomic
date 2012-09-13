@@ -1,56 +1,33 @@
-
 # &#9883; ATOMIC &#9883;
+##
 
-A small SQL library for Clojure
-
-## Installation
-
- *TBD this doesn't work yet* 
-
- Add ["atomic" 0.1] to your project.clj file
+A SQL library for Clojure
 
 ## Usage
 
-API documentation is [here](http://bickfordb.github.com/atomic)
-
 ```clj
+
+(def schema
+  (table :user
+     (column :id)
+     (column :first_name)
+     (column :last_name)
+     (column :password)
+     (column :salt)))
+
 (use 'atomic)
-(def schema (create-schema))
-
-; Describe a user table 
-(deftable 
-  :user
-  :id
-  :name
-  (has-many :emails :email :user_id :user))
-
-(deftable 
-  :email
-  :id
-  :address
-  :user_id)
-
-(def db (create-db "org.sqlite.JDBC" "jdbc:sqlite::memory:"))
-(execute-sql db "create table user (id integer primary key, name text, created_at integer)")
-(execute-sql db "create table email (id integer primary key, user_id integer, address text)")
-
-(insert db :user {:id 1 :name "Brandon"})
-(insert db :email {:address "foo@bar.com" :user_id 1})
-(insert db :email {:address "bar@bar.com" :user_id 1})
-
-(println (-> select 
-             (from :user)
-             (join :email (on (= :email.user_id :user.id)))
-             (where (= :id 1))
-             (execute db)))
-
-; [{:user {:name "Brandon" :id 5} :email {:address "foo@bar.com" :user_id 1 :id 1}}
-;  {:user {:name "Brandon" :id 5} :email {:address "bar@bar.com" :user_id 1 :id 2}}]
-
-; Easy-join graph API (one/many):
-; Get the "Brandon" record, and join in the related emails
-
-(println (one db :user :emails (= (:name "Brandon")))) 
-; [{:name "Brandon" :id 5 :emails [{:address "foo@bar.com" :user_id 1 :id 1} {:address "bar@bar.com" :user_id 1 :id 2}]}]
+(with-pool (create-pool "jdbc:sqlite::memory:")
+  (tx
+    (exec-sql "CREATE TABLE user (id INTEGER primary key,
+                                  first_name TEXT,
+                                  last_name TEXT,
+                                  password TEXT)")
+    (INSERT schema :user {:first_name "Brandon"
+                          :last_name "Bickford"
+                          :password "open sesame"})
+    (SELECT schema :user (= :last_name "Bickford"))))
 ```
 
+## License
+
+Copyright 2012 Brandon Bickford.  Please refer to LICENSE

@@ -1,934 +1,586 @@
 (ns atomic
-  "Library to simplify interaction with SQL databases
+  (:require lg)
+  (:use [clojure.string :only [join]])
+  (:import
+    (clojure.lang RT)
+    (java.sql BatchUpdateException DriverManager SQLException Statement)))
 
-  Example:
+; Dynamic global representing the current connection pool
+(def ^:dynamic *pool* nil)
 
-    (use 'atomic)
-    (def schema (create-schema))
+; Dynamic global representing the current database connection
+(def ^:dynamic *conn* nil)
 
-    ; Describe a user table 
-    (deftable 
-      :user
-      :id
-      :name
-      (has-many :emails :email :user_id :user))
+; Dynamic global representing the SQL isolation preference
+(def ^:dynamic *isolation* nil)
 
-    (deftable 
-      :email
-      :id
-      :address
-      :user_id)
+(def autoload-driver?
+  "Automatically load drivers?"
+  (atom true))
 
-    (def db (create-db \"org.sqlite.JDBC\" \"jdbc:sqlite::memory:\"))
-    (execute-sql db \"create table user (id integer primary key, name text, created_at integer)\")
-    (execute-sql db \"create table email (id integer primary key, user_id integer, address text)\")
+(def drivers
+  "Mapping of driver string to JDBC URL pattern
 
-    (insert db :user {:id 1 :name \"Brandon\"})
-    (insert db :email {:address \"foo@bar.com\" :user_id 1})
-    (insert db :email {:address \"bar@bar.com\" :user_id 1})
-
-    (println (-> select 
-                 (from :user)
-                 (join :email (on (= :email.user_id :user.id)))
-                 (where (= :id 1))
-                 (execute db)))
-
-    ; [{:user {:name \"Brandon\" :id 5} :email {:address \"foo@bar.com\" :user_id 1 :id 1}}
-    ;  {:user {:name \"Brandon\" :id 5} :email {:address \"bar@bar.com\" :user_id 1 :id 2}}]
-
-    ; Easy-join graph API (one/many):
-    ; Get the \"Brandon\" record, and join in the related emails
-
-    (println (one db :user :emails (= (:name \"Brandon\")))) 
-    ; [{:name \"Brandon\" :id 5 :emails [{:address \"foo@bar.com\" :user_id 1 :id 1} {:address \"bar@bar.com\" :user_id 1 :id 2}]}]
-
-
+  When a pattern matches a pool URL the matching class will be loaded.
+  (reset! autoload-driver? (atom false)) to turn this off.
   "
-  (:refer-clojure :exclude [compile])
-  (:use atomic.util)
-  (:require [atomic.localmap :as localmap]
-            clojure.string
-            clojure.walk))
+  (atom {"org.sqlite.JDBC" #".*sqlite.*"
+         "org.Postgresql.Driver" #".*postgresql.*"
+         "com.mysql.jdbc.Driver" #".*mysql.*"}))
 
-(defn create-schema
-  "Create a schema object.
+(defn- split-kw-opts
+  "Split a list of options into keyword options and other values
 
-  Schema objects store table and foreign key definitions.  For simple
-  applications this doesn't need to be called directly, usually you
-  can use the default global schema object.  This is useful if you need to
-  maintain multiple, conflicting table definitions in one
-  application. 
-
-  Example:
-    ; Create a schema object:
-    (def my-schema (create-schema))
-
-    ; Use my-schema in :my_table's definition:
-    (deftable :my_table {:schema my-schema}))
+  Returns a tuple of [option-mapping positional-args]
   "
-  []
-  {:tables (atom {})
-   :foreign-keys (atom {})})
-
-(def +schema+ (create-schema))
-
-(defn create-db 
-  "Create a new db instance.
-  
-  A db is a handle to a schema and a database URL.  
-
-  Calls to (execute db... ) and (execute-sql db) will lazily create and
-  maintain thread-local connections 
-  "
-  [driver url & opts] 
-  {
-   :driver driver
-   :url url
-   :schema (get opts :schema +schema+)
-   :local (localmap/create)})
-
-(defonce +jdbc-loaded+ (atom #{}))
-
-(defn- load-jdbc-driver
-  [driver-path]
-  (when (not (contains? @+jdbc-loaded+ driver-path))
-    (Class/forName driver-path)
-    (swap! +jdbc-loaded+ conj driver-path)))
-
-(defn- add-foreign-key
-  [schema table-key fk]
-  (swap! (schema :foreign-keys) assoc [table-key (:key fk)] fk))
-
-(defn has-one 
-  "Get a has-one foreign key
- 
-  This is used in a deftable call.
-
-  For example:
-
-    (deftable :user 
-      (column :id)
-      (column :name)
-      (column :company_id)
-      (has-one :employer :company :company_id :employees))
-
-  Arguments
-  key -- keyword, the name of the relation
-  table -- keyword, the name of the destination table
-  column -- keyword, the column name in the source table
-  reverse -- keyword, the name of the reverse relation
-
-  Returns
-  A map with :type :has-one set
-  "
-  ([key table column] (has-one key table column nil))
-  ([key table column reverse]
-    {:type :has-one
-     :key key
-     :column column
-     :table table
-     :reverse reverse}))
-
-(defn has-many 
-  "Get a has-many foreign key
- 
-  This is used in a deftable call.
-
-  For example:
-
-    (deftable :user 
-      (column :id)
-      (column :name)
-      (column :company_id))
-
-   (deftable :company
-      (column :id)
-      (column :title)
-      (has-many :employees :user :company_id :employer))
-
-  Arguments
-  key -- keyword, the name of the relation
-  table -- keyword, the name of the destination table
-  column -- keyword, the column name in the destination table
-  reverse -- keyword, the name of the reverse relation
-
-  Returns
-  A map with :type :has-many set 
-  "
-  ([key table column] 
-   (has-many key table column nil))
-  ([key table column reverse]
-     {:type :has-many
-      :key key
-      :column column
-      :table table
-      :reverse reverse}))
-
-(defn- create-connection
-  "Create a connection for an db"
-  [db]
-  (load-jdbc-driver (:driver db))
-  (java.sql.DriverManager/getConnection ^String (:url db)))
-
-(defn- get-connection
-  "Get a connection from an db"
-  [db]
-  (let [m (:local db)]
-    (localmap/setdefault m :connection (fn [] (create-connection db)))))
-
-(defn- resultset-seq2
-  "Creates and returns a vector of tuples corresponding to
-  the rows in the java.sql.ResultSet rs"
-  {:added "1.0"}
-  [^java.sql.ResultSet rs]
-    (let [n (inc (.getColumnCount (.getMetaData rs)))
-          row-values (fn []
-                       (let [row (transient (vector))]
-                         (loop [i 1]
-                            (when (< i n) 
-                             (conj! row (.getObject rs i))
-                             (recur (inc i))))
-                         (persistent! row)))
-          result (transient (vector))]
-      (loop []
-        (when (.next rs)
-          (conj! result (row-values))
-          (recur)))
-      (persistent! result))) 
-
-(defn execute-sql 
-  "Execute a SQL query.
-  
-  Arguments
-  db -- db
-  sql -- string, a SQL query
-  params -- [literals], a list of bind values 
-
-  Returns
-  A map with the following keys
-   :rows -- a list of row tuples if any
-   :update-count -- int, the number of updated rows if any
-   :generated-keys -- list, a list of generated keys (insert / sequence IDs).  Usually like [[25]] 
-  "
-  ([db sql] (execute-sql db sql []))
-  ([db sql params]
-   ;(println sql params)
-   (let [conn (get-connection db)]
-     (with-open [stmt (.prepareStatement conn sql)]
-       (dorun (map-indexed 
-                (fn [idx p] (.setObject stmt (inc idx) p)) params))
-       (let [has-result-set (.execute stmt)]
-         {:sql sql 
-          :params params
-          :rows (if has-result-set 
-                  (with-open [rs (.getResultSet stmt)] (resultset-seq2 rs))
-                  [])
-          :update-count (if has-result-set 0 (.getUpdateCount stmt))
-          :generated-keys (if has-result-set {} 
-                            (resultset-seq2 (.getGeneratedKeys stmt)))})))))
-
-(defmacro tx 
-  "Perform a transaction for a database
- 
-  When an exception occurs inside of this block, a rollback is executed and the exception is re-thrown.
-
-  For example:
-    (tx db
-      (execute-sql \"delete from my_table where id = ?\" [5]))
-   
-  " 
-  [db & body] 
-  `((execute-sql ~db "BEGIN" [])
-    (try
-      ~@body
-      (execute-sql ~db "COMMIT")
-      (catch Exception the-exception#
-        (execute-sql ~db "ROLLBACK")
-        (throw the-exception#)))))
-
-(defmacro tx-read-only 
-  "Run a block of commands for a database in a read-only transaction wrapper" 
-  [db & body] 
-  `((execute-sql ~db "BEGIN" [])
-    (try
-      ~@body
-      (execute-sql ~db "ROLLBACK")
-      (catch Exception the-exception#
-        (execute-sql ~db "ROLLBACK")
-        (throw the-exception#)))))
-
-(defn column 
-  "Define a column
-  
-  Arguments
-  name -- string, the key of the column
-  options
-    :initial -- use this value on insert if none is provided 
-    :default -- use this value on update if none is provided
-    :name -- the name of the column in the table
-
-  Returns
-  Column
-  "
-  [a-keyword & params]
-  (conj {:name (columnify a-keyword) 
-         :key a-keyword
-         :type :column
-         :primary? false} (apply hash-map params)))
-
-(defmacro deftype?
-  "Create a function which checks the :type of a map
-
-  This is useful for storing casual types in maps. 
-
-  For example \"(deftype? car)\" will define a function named \"car?\" which checks its argument
-  for having the :type key set to :car 
-
-  Arguments
-  a-key -- symbol, the name of the keyword and defined function
-  "
-  [a-key]
-  (let [kw (keyword (name a-key))] 
-     `(defn-
-       ~(symbol (str (name a-key) "?"))
-       [m#]
-       (and (map? m#) 
-            (= (:type m#) ~kw)))))
-
-(deftype? column)
-(deftype? table)
-(deftype? bind)
-(deftype? relation)
-(deftype? infix)
-(deftype? prefix)
-(deftype? unary)
-(deftype? on)
-(deftype? where)
-(deftype? relation)
-(deftype? select)
-(deftype? insert)
-(deftype? update)
-(deftype? delete)
-(deftype? has-one)
-(deftype? has-many)
-
-(defn- parse-columns
   [opts]
-  (let [col-opts (filter #(or (keyword? %1) (column? %1)) opts)
-        ; convert keywords to columns
-        cols0 (for [c col-opts]
-                (if (keyword? c) (column c) c))
-        ; default the first column to primary
-        cols1 (if (some :primary? cols0)
-                cols0
-                (cons (assoc (first cols0) :primary? true) (rest cols0)))]
-    cols1))
+  (loop [opts opts
+         kw-opts {}
+         other-opts []]
+    (let [[fst snd & t] opts
+          [_ & t'] opts]
+      (cond
+        (empty? opts) [kw-opts other-opts]
+        (keyword? fst) (recur t (assoc kw-opts fst snd) other-opts)
+        :else (recur t' kw-opts (conj other-opts fst))))))
 
-(defn deftable
-  "Define a table
+(defn- modify!
+  [cell f & args]
+  (let [ret-cell (atom nil)
+        g (fn [st]
+            (let [[st' ret] (apply f st args)]
+              (reset! ret-cell ret)
+              st'))]
+    (swap! cell g)
+    @ret-cell))
 
-  This has a couple of argument forms
+(defn create-connection
+  [conn-params]
+  (let [{:keys [url username password]} conn-params]
+    (cond
+      (and username password) (DriverManager/getConnection url username password)
+      :else (DriverManager/getConnection url username password))))
 
-  Here are some examples:
-    (deftable :company
-      :id
-      :title)
-     
-    (deftable :company
-      (column :id)
-      (column :title)
-      (has-many :employees :user :company_id)) 
+(defn pool-st-acquire-connection
+  [st]
+  (let [{:keys [connections conn-params]} st]
+    (if (empty? connections)
+      ; FIXME: call .isValid on the connection
+      [st (create-connection conn-params)]
+      [(assoc st :connections (rest connections)) (first connections)])))
 
-    (deftable :company
-      (column :id)
-      (column :title)
-      {:schema some-schema}) 
+(defn pool-st-release-connection
+  [st conn]
+  (let [{:keys [connections min-water]} st]
+     (if (> (count connections) min-water)
+        (do
+            (.close conn)
+            st)
+        (assoc st :connections (cons conn connections)))))
 
-  The first column specified defaults to the primary-key column.
+(defprotocol PPool
+  (^boolean supports-generated-keys? [_])
+  (^java.sql.Connection acquire-connection [_])
+  (release-connection [_ ^java.sql.Connection connection]))
 
+(defrecord Pool [st]
+  PPool
+  (supports-generated-keys? [pool] (get @st :generated-keys? true))
+  (acquire-connection [pool] (modify! st pool-st-acquire-connection))
+  (release-connection [pool conn] (swap! st pool-st-release-connection conn)))
+
+(defn create-pool
+  [url & opts]
+  (let [opts' (apply hash-map opts)
+        {:keys [user password min-water generated-keys?] :or {min-water 1 generated-keys? true}} opts'
+        conn-params {:user user
+                     :password password
+                     :url url}]
+    (when @autoload-driver?
+      (doseq [[driver-name pat] @drivers]
+        (when (re-matches pat url))
+          (try
+            (RT/loadClassForName driver-name)
+            (catch Exception exception nil))))
+
+    (Pool. (atom {:conn-params conn-params
+                  :min-water min-water
+                  :generated-keys? generated-keys?
+                  :connections []}))))
+
+(defmacro with-pool
+  [p & body]
+  `(binding [atomic/*pool* ~p] ~@body))
+
+(defmacro with-conn
+  [& body]
+  `(binding [atomic/*conn* (atomic/acquire-connection atomic/*pool*)]
+     (when (nil? atomic/*conn*)
+       (throw (Exception. "unexpected nil connection")))
+     (try
+       (do ~@body)
+       (finally
+         (atomic/release-connection atomic/*pool* atomic/*conn*)))))
+
+(defn column
+  [col-name & col-opts]
+  (let [name (name col-name)
+        key col-name
+        x {:key key :name name :column? true}]
+    (if (not (empty? col-opts))
+      (apply assoc x col-opts)
+      x)))
+
+(defn- to
+  [srcs dsts]
+  (let [ret (transient {})]
+    (loop [srcs srcs
+           dsts dsts]
+      (if (or (empty? srcs) (empty? dsts))
+        ret
+        (let [[src & srcs'] srcs
+              [dst & dsts'] dsts]
+          (assoc! ret src dst)
+          (recur srcs' dsts'))))
+    (persistent! ret)))
+
+(defn- map'
+  "strict version of map"
+  [f a-seq]
+  (doall (map f a-seq)))
+
+(defn- flatten'
+  "Classic/1-deep version of flatten"
+  [seq-seq]
+  (apply concat seq-seq))
+
+(defn- intersperse
+  [sep a-seq]
+  (loop [i 0
+         ret []
+         a-seq a-seq]
+    (if (empty? a-seq)
+      ret
+      (let [[h & t] a-seq
+            ret' (if (= i 0)
+                   (conj ret h)
+                   (conj ret sep h))]
+        (recur (inc i)
+               ret'
+               (rest a-seq))))))
+
+(defn new-schema
+  [& opts]
+  (let [[kws objs] (split-kw-opts opts)
+        {:keys [name]} kws
+        tbls (filter :table? objs)
+        relations (filter :relation? objs)
+        name-to-table (to (map :key tbls) tbls)]
+    {:tables name-to-table}))
+
+(defn table
+  [table-kw & table-opts]
+  (let [table-name (name table-kw)
+         [kws vals] (split-kw-opts table-opts)
+         columns (filter :column? vals)
+         {:keys [name]} kws]
+     {:name (if name name table-name)
+      :key table-kw
+      :table? true
+      :columns columns}))
+
+(defn get-result-array
+  [^java.sql.ResultSet result-set]
+  (let [md (.getMetaData result-set)
+        num-cols (.getColumnCount md)
+        col-idxs (range 1 (inc num-cols))
+        cols (doall (for [idx col-idxs] [idx (.getColumnType md idx)]))]
+    (loop [ret []]
+      (if (.next result-set)
+        (let [row (doall (for [[col-idx col-type] cols]
+                           (let [v (condp = col-type
+                                     java.sql.Types/BIGINT (.getLong result-set col-idx)
+                                     java.sql.Types/BIT (.getInt result-set col-idx)
+                                     java.sql.Types/BLOB (.getBytes result-set col-idx)
+                                     java.sql.Types/BOOLEAN (.getInt result-set col-idx)
+                                     java.sql.Types/CLOB (.getClob result-set col-idx)
+                                     java.sql.Types/DATE (.getDate result-set col-idx)
+                                     java.sql.Types/DECIMAL (.getBigDecimal result-set col-idx)
+                                     java.sql.Types/DOUBLE (.getDouble result-set col-idx)
+                                     java.sql.Types/FLOAT (.getDouble result-set col-idx)
+                                     java.sql.Types/INTEGER (.getInt result-set col-idx)
+                                     java.sql.Types/NUMERIC (.getDouble result-set col-idx)
+                                     java.sql.Types/SMALLINT (.getInt result-set col-idx)
+                                     java.sql.Types/VARCHAR (.getString result-set col-idx))
+                                 was-null? (.wasNull result-set)]
+                             (if (.wasNull result-set) nil v))))]
+          (recur (conj ret row)))
+        ret))))
+
+(defn prefix-expr
+  [op & es]
+  [:prefix op es])
+
+(defn infix-expr
+  [op & es]
+  (assert (>= (count es) 1))
+  (condp = (count es)
+    1 (first es)
+    [:infix op es]))
+
+(defn unary-expr
+  [op & es]
+  [:unary op es])
+
+(def ?and (partial infix-expr "AND"))
+(def ?or (partial infix-expr "OR"))
+(def ?+ (partial infix-expr "+"))
+(def ?- (partial infix-expr "-"))
+(def ?= (partial infix-expr "="))
+(def ?!= (partial infix-expr "!="))
+(def ?<= (partial infix-expr "<="))
+(def ?< (partial infix-expr "<"))
+(def ?>= (partial infix-expr ">="))
+(def ?> (partial infix-expr ">"))
+(def ?in (partial infix-expr "IN"))
+(defn ?func
+  "function expression
+  e.g. '(FUNC \"MIN\" 1 2)'
   "
-  [key & opts]
-  (let [columns (parse-columns opts)
-        opts0 (->> (cons {:schema +schema+} opts)
-                (filter #(and (map? %) (not (column? %))))
-                (reduce conj)) 
-        schema (:schema opts0)
-        pk-column (first (filter :primary? columns))]
+  [function-name & xs]
+  (apply prefix-expr function-name xs))
 
-    (swap! (:tables schema) 
-           assoc 
-           key 
-           {:name (name key)
-            :type :table
-            :columns columns
-            :relations (filter relation? opts)})
-    (doseq [fk (filter has-one? opts)]
-      (add-foreign-key 
-        schema 
-        key fk)
-      (when (:reverse fk)
-        (add-foreign-key
-          schema
-          (:table fk)
-          {:table key
-           :column (:column fk)
-           :type :has-many
-           :key (:reverse fk)
-           :reverse (:key fk)}))
-      )
-    (doseq [fk (filter has-many? opts)]
-      (add-foreign-key 
-        schema 
-        key fk)
-      (when (:reverse fk)
-        (add-foreign-key
-          schema
-          (:table fk)
-          {:table key
-           :column (:column fk)
-           :type :has-one
-           :key (:reverse fk)
-           :reverse (:key fk)}))
-      )
-    ))
+(def ?min (partial ?func "MIN"))
+(def ?max (partial ?func "MAX"))
+
+(defn- where
+  [expr]
+  {:where? true :expr expr})
+
+(defn WHERE
+  [& forms]
+  (assert (not (empty? forms)))
+  (condp = (count forms)
+    1 (where (first forms))
+    (where (apply ?and forms))))
+
+(defn comp-unit
+  ([sql bind]
+   {:sql sql :bind bind})
+  ([sql]
+   (comp-unit sql ())))
+
+(declare compile-expr)
+
+(defn compile-literal-expr
+  [[h & _]]
+  (if (= h nil)
+    [(comp-unit "NULL")]
+    [(comp-unit "?" [h])]))
+
+(defn compile-var-expr
+  [[h & _]]
+  [(comp-unit h ())])
+
+(defn compile-prefix-expr
+  [[function-name sub-exprs]]
+  (let [sep [(comp-unit ", ")]
+        c-sub-exprs (map' compile-expr sub-exprs)
+        separated (flatten' (intersperse sep c-sub-exprs))
+        expr (concat [(comp-unit function-name) (comp-unit "(")]
+                  :separated
+                  [(comp-unit ")")])]
+    expr))
+
+(defn compile-infix-expr
+  [[operator sub-exprs]]
+  (let [sub (map' compile-expr sub-exprs)
+        open (comp-unit "(")
+        close (comp-unit ")")
+        op (comp-unit (str " " operator " "))]
+    (loop [i 0
+           items sub
+           ret []]
+      (if (empty? items)
+        ret
+        (let [[h & items'] items
+              prefix (if (= i 0)
+                       [open]
+                       [op open])
+              item (concat prefix h [close])
+              ret' (concat ret item)]
+          (recur (inc i) items' ret'))))))
+
+(defn compile-expr
+  [e]
+  (let [ret (cond
+              (vector? e) (let [[h & xs] e]
+                            (condp = h
+                              :var (compile-var-expr xs)
+                              :literal (compile-literal-expr xs)
+                              :prefix (compile-prefix-expr xs)
+                              :infix (compile-infix-expr xs)
+                              (compile-literal-expr [e])))
+              (keyword? e) [(comp-unit (name e))]
+              :else (compile-literal-expr [e]))]
+    ret))
+
+(defmacro with-opt-conn
+  "Set *conn* from an option map containing :pool or :conn or *conn* or *pool* (in that order)."
+  [opts & body]
+  `(let [opts# ~opts
+         f# (fn [] ~@body)
+         conn# (:conn opts#)
+         pool# (:pool opts#)]
+     (cond
+       ;conn# (binding [atomic/*conn* conn#] (f#))
+       ;pool# (binding [atomic/*pool* pool#] (atomic/with-conn (f#)))
+       (not (nil? atomic/*conn*)) (f#)
+       (not (nil? atomic/*pool*)) (atomic/with-conn (f#))
+       :else (throw (Exception. ("no pool or connection defined."))))))
+
+(defn- prepare-statement
+  [conn sql bind & opts]
+  (when (nil? conn)
+    (throw (Exception. "expecting non-nil connection")))
+  (lg/debug "prepare-statement '%s' bind: %s" sql bind)
+  (let [opts' (apply hash-map opts)
+        {:keys [generated-keys?]} opts'
+        stmt (if generated-keys?
+               (.prepareStatement conn sql java.sql.Statement/RETURN_GENERATED_KEYS)
+               (.prepareStatement conn sql))]
+    (loop [param-idx 1
+           bind bind]
+      (when (not (empty? bind))
+        (let [[h & t] bind]
+          (cond
+            (string? h) (.setString stmt param-idx h)
+            (float? h) (.setDouble stmt param-idx h)
+            (integer? h) (.setInt stmt param-idx h)
+            :else (throw (Error. (format "unexpected: %s" h))))
+          (recur (inc param-idx) t))))
+    stmt))
+
+(defn- render-compilation-units
+  [compilation-units]
+  (let [sql (apply str (map :sql compilation-units))
+        bind (apply concat (map :bind compilation-units))]
+    [sql bind]))
+
+(defn exec-sql
+  [sql & opts]
+  (let [[opts args] (split-kw-opts opts)]
+    (with-opt-conn opts
+                   (let [stmt (prepare-statement *conn* sql args)
+                         has-result? (.execute stmt)
+                         rows (if has-result? (get-result-array (.getResultSet stmt)) [])]
+                         rows))))
+
+(defn- prepare-statement'
+  [conn comp-units & opts]
+  (let [[sql bind] (render-compilation-units comp-units)]
+    (apply prepare-statement conn sql bind opts)))
+
+(defn SELECT
+  [schema table-kw & select-opts]
+  (let [[kws vals] (split-kw-opts select-opts)]
+    (with-opt-conn kws
+                   (let [tbl (get (:tables schema) table-kw)
+                         _ (when (not tbl)
+                             (throw (Exception. "expecting a table")))
+                         pool (if (:pool kws) (:pool kws) *pool*)
+                         {:keys [columns name]} tbl
+                         wheres (filter :where? vals)
+                         where (if (not (empty? wheres))
+                                 (apply ?and (map :expr wheres)))
+                         table-ident "T"
+                         col-part [(comp-unit (join ", " (for [col columns] (format "%s.%s" table-ident (:name col)))))]
+                         cmd-part [(comp-unit "SELECT ")]
+                         from-part [(comp-unit (format " FROM %s AS %s" name table-ident))]
+                         where-part (when where (concat [(comp-unit " WHERE ")] (compile-expr where)))
+                         comp-units (concat cmd-part col-part from-part where-part)
+                         [sql bind-vals] (render-compilation-units comp-units)
+                         stmt (prepare-statement' *conn* comp-units)]
+                     (let [result-set (.executeQuery stmt)
+                           column-keys (map :key columns)
+                           rows (get-result-array result-set)]
+                       (for [row rows]
+                         (to column-keys row)))))))
+
+(defn DELETE
+  [schema table-kw & select-opts]
+  (let [[kws vals] (split-kw-opts select-opts)]
+    (with-opt-conn kws
+                   (let [tbl (get (:tables schema) table-kw)
+                         _ (when (not tbl)
+                             (throw (Exception. "expecting a table")))
+                         pool (if (:pool kws) (:pool kws) *pool*)
+                         {:keys [columns name]} tbl
+                         wheres (filter :where? vals)
+                         where (if (not (empty? wheres))
+                                 (apply ?and (map :expr wheres)))
+                         table-ident "T"
+                         col-part [(comp-unit (join ", " (for [col columns] (format "`%s.%s`" table-ident (:name col)))))]
+                         cmd-part [(comp-unit "DELETE ")]
+                         from-part [(comp-unit (format " FROM %s %s" name table-ident))]
+                         where-part (when where (concat [(comp-unit " WHERE ")] (compile-expr where)))
+                         comp-units (concat cmd-part col-part from-part where-part)
+                         [sql bind-vals] (render-compilation-units comp-units)
+                         stmt (prepare-statement' *conn* comp-units)]
+                     (let [result-set (.executeQuery stmt)
+                           column-keys (map :key columns)
+                           rows (get-result-array result-set)]
+                       (for [row rows]
+                         (to column-keys row)))))))
 
 
-(defn- lookup-table [schema entity-name] 
-  (let [entity (get @(:tables schema) entity-name nil)]
-    (if entity entity
-      (throw (Exception. (format "unexpected entity \"%s\"" entity-name))))))
+(defn- surround
+  [start-tok comp-units end-tok]
+  (concat [start-tok] (flatten' comp-units) [end-tok]))
 
-(defn- infix-op 
-  ([op] nil)
-  ([op ls] ls)
-  ([op ls rs] {:type :infix :op op :left ls :right rs})
-  ([op ls rs & more] (infix-op op 
-                               (infix-op op ls rs)
-                               (apply infix-op more))))
+(defn- generated-keys?
+  [opts]
+  (cond
+    (contains? opts :generated-keys?) (:generated-keys? opts)
+    *pool* (supports-generated-keys? *pool*)
+    :else false))
 
-(defn infix 
-  "Generate a function which takes two arguments
-  
-  For example:
-    (infix \"+\") generates a function which takes two arguments and will
-  compile to a SQL expression like \"$left + $right\"
-  "
-  [op]
-  (fn [l r] {:type :infix :op op :left l :right r}))
+(defn INSERT
+  [schema table-kw value-dict & opts]
+  (let [[kw-opts _] (split-kw-opts opts)]
+    (with-opt-conn kw-opts
+                   (let [key-values (seq value-dict)
+                         table (get (:tables schema) table-kw)
+                         full-table-name (if (:name schema)
+                                           (str (:name schema) "." (:name table))
+                                           (:name table))
+                         keys (map first key-values)
+                         values (map second key-values)
+                         columns-part (surround (comp-unit "(")
+                                                (intersperse [(comp-unit ",")] (map compile-expr keys))
+                                                (comp-unit ")"))
+                         values-compiled (map compile-expr values)
+                         values-part (surround (comp-unit "(")
+                                               (intersperse [(comp-unit ",")] (map compile-expr values))
+                                               (comp-unit ")"))
+                         all-parts (concat [(comp-unit (str "INSERT INTO " full-table-name " "))]
+                                           columns-part
+                                           [(comp-unit " VALUES ")]
+                                           values-part)
+                         stmt (prepare-statement' *conn* all-parts :generated-keys? (generated-keys? kw-opts))
+                         row-count (.executeUpdate stmt)
+                         generated-keys (.getGeneratedKeys stmt)
+                         insert-id (when (.next generated-keys)
+                                     (.getLong generated-keys 1))]
+                     insert-id))))
+
+(defn ROLLBACK
+  []
+  (when *conn*
+    (.rollback #^java.sql.Connection *conn*)))
+
+(defn COMMIT
+  []
+  (when *conn*
+    (.commit #^java.sql.Connection *conn*)))
 
 
-(defonce infix-operators (atom '{
-                                 = (atomic/infix "=")
-                                 and (atomic/infix "AND")
-                                 or (atomic/infix "OR")
-                                 not (atomic/prefix "NOT")
-                                 bit-and (atomic/infix "&")
-                                 bit-or (atomic/infix "|")
-                                 bit-not (atomic/prefix "~")
-                                 bit-xor (atomic/infix "^")
-                                 like (atomic/infix "LIKE")
-                                 rlike (atomic/infix "RLIKE")
-                                 is (atomic/infix "IS")
-                                 + (atomic/infix "+")
-                                 / (atomic/infix "/")
-                                 * (atomic/infix "*")
-                                 in (atomic/infix "IN")
-                                 >= (atomic/infix ">=")
-                                 != (atomic/infix "!=")
-                                 <= (atomic/infix "<=")}))
+(defmacro serializable
+  [& body]
+  `(binding [atomic/*isolation* java.sql.Connection/TRANSACTION_SERIALIZABLE]
+    ~@body))
 
-(def select 
-  "A empty select query
-  
-  Usage:
-    (-> select
-        (from :user)
-        (where (= :name \"Brandon\"))
-        (execute db))
+(defmacro repeatable-read
+  [& body]
+  `(binding [atomic/*isolation* java.sql.Connection/TRANSACTION_REPEATABLE_READ]
+    ~@body))
 
-  "
-  {:type :select
-   :relations []
-   :where []
-   :limit nil
-   :group-by []})
+(defmacro tx
+  [& body]
+  `(atomic/with-opt-conn
+     {}
+     (let [conn# atomic/*conn*
+           autocommit?# (.getAutoCommit conn#)
+           isolation# (.getTransactionIsolation conn#)
+           f# (fn [] ~@body)
+           in-tx?# (not autocommit?#)
+           preferred-isolation# (or atomic/*isolation* isolation#)]
+       (if in-tx?#
+         (f#) ; we're already in a transaction
+         (do
+           (.setAutoCommit conn# false)
+           (.setTransactionIsolation conn# preferred-isolation#)
+           (try
+             (do
+               (f#)
+               (.commit conn#))
+             (catch Exception error#
+               (.rollback conn#)
+               (throw error#))
+             (finally
+               ; turn autocommit back on
+               (.setAutoCommit conn# true)
+               ; return to the original isolation level
+               (.setTransactionIsolation conn# isolation#))))))))
 
-(defn insert-into
-  "Get an insert query
-  
-  Usage:
-    (-> (insert-into :user {:name \"Brandon\"})
-        (execute db))
-  " 
-  [table values]
-  {:type :insert
-   :table table
-   :values values})
+(defn- to-migration
+  [forms]
+  (let [opts (apply hash-map forms)]
+    {:up (list (symbol "fn") [] (:up opts))
+     :down (list (symbol "fn") [] (:down opts))}))
 
-(defn update
-  "Get an update query
-  
-  Usage:
-    (-> (update :user {:name \"Brandon\"})
-        (where (= :id 5))
-        (execute db))
-  "
-  [table values]
-  {:type :update
-   :table table
-   :values values
-   :where []})
+(def migration-schema (new-schema
+                        (table :migration
+                               (column :migration_id))))
 
-(defn delete [table] 
-  "Get a delete query
-  
-  Usage:
-    (-> (delete :user)
-        (where (= :id 5))
-        (execute db))
-  "
-  {:type :delete
-   :table table
-   :where []})
+(defmacro migration
+  [& opts]
+  (atomic/to-migration opts))
 
-(def relation 
-  {:type :relation
-   :as nil
-   :is-left-outer false
-   :source-table nil
-   :on nil
-   :source-query nil})
- 
-(defn from 
-  [query
-   relation-name
-   & exprs]
-  "Create a from relation"
-  (let [[on-exprs attr-exprs] (classify on? exprs)
-        on-query (apply infix-op "AND" (flatten (map :items on-exprs)))
-        new-relation (apply conj relation {:as relation-name :source-table relation-name :on on-query} attr-exprs)
-        new-query (assoc query :relations (concat (:relations query) [new-relation]))]
-    new-query))
+(defn create-migrations-table!
+  []
+  (exec-sql "CREATE TABLE IF NOT EXISTS migration (migration_id INTEGER PRIMARY KEY NOT NULL)"))
 
-(defn columns
-  "Specify a list of (columns [:u.id [:user :id] ] "
-  [query & cols]
-  (assoc query 
-         :columns 
-         (doall (for [[lhs rhs] (partition 2 cols)]
-                  {:expr lhs :key-path rhs}))))
+(defn run-up-migration!
+  [migration-id migration]
+  (let [rows (SELECT migration-schema :migration (WHERE (?= :migration_id migration-id)))
+        exists? (> (count rows) 0)
+        {:keys [up]} migration]
+    (when (not exists?)
+      (when up
+        (lg/debug "running up migration: %s" migration-id)
+        (up))
+      (INSERT migration-schema :migration {:migration_id migration-id}))))
 
-(defn parse-dsl 
-  [clauses]
-  (clojure.walk/postwalk-replace @infix-operators clauses))
+(defn run-down-migration!
+  [migration-id migration]
+  (let [rows (SELECT migration-schema :migration (WHERE (?= :migration_id migration-id)))
+        exists? (> (count rows) 0)
+        {:keys [down]} migration]
+    (when exists?
+      (when down
+        (lg/debug "running down migration: %s" migration-id)
+        (down))
+      (DELETE migration-schema :migration (?= :migration_id migration-id)))))
 
-(defmacro on 
-  "Add an ON clause to a join clause
-  
-  See \"where\"
-  "
-  [& clauses]
-  `(hash-map :type :on
-             :items (list ~@(parse-dsl clauses))))
+(defn run-all-up-migrations!
+  [ms]
+  (create-migrations-table!)
+  (lg/debug "migrations: %s" ms)
+  (loop [i 0
+         ms ms]
+    (when (not (empty? ms))
+      (run-up-migration! i (first ms))
+      (recur (inc i)
+             (rest ms)))))
 
-(defn join [& expr] (apply from expr))
-(defn inner-join [rel & exprs] (apply from rel exprs))
-(defn left-join [rel & exprs] (apply from rel (cons {:is-left-outer true} exprs)))
+(defn run-all-down-migrations!
+  [ms]
+  (create-migrations-table!)
+  (loop [i (dec (count ms))
+         ms (reverse ms)]
+    (when (not (empty? ms))
+      (run-up-migration! i (first ms))
+      (recur (dec i)
+             (rest ms)))))
 
-(defmacro where 
-  "Add a where clause to a query. 
-
-  Arguments
-  query -- a query
-  clauses* -- one or more clauses
-
-  Returns
-  query
-  "
-  [query & clauses]
-  `(assoc ~query :where (concat (:where ~query) (list ~@(parse-dsl clauses)))))
-
-(defn- compile-opt-clause [schema query] [])
-
-(defn- get-columns 
-  [schema query]
-  (if (not (= nil (:columns query)))
-    (:columns query)
-    (flatten 
-      (for [relation (:relations query)]
-        (if (= nil (:source-table relation))
-          []
-          (let [table (lookup-table schema (:source-table relation))]
-            (for [column (:columns table)]
-              (let [col-name (:name column)
-                    rel-alias (name (:as relation))
-                    key-path [(:as relation) (:key column)]
-                    expr (keyword (format "%s.%s" rel-alias col-name))]
-                {:key-path key-path :expr expr}))))))))
-
-(defn sql
-  "Generate a SQL expression"
-  [text & values] 
-  {:type :sql
-   :text text
-   :values values})
-
-(defn bind 
-  "Bind a value to be escaped"
-  [v]
-  {:type :bind :value v})
-
-(defn- compile-keyword-expr 
-  "Compile a keyword where expr"
-  [query kw] 
-  (name kw))
-
-(defn- compile-literal-expr 
-  [subject]
-  [(bind subject)])
-
-(defn- compile-sequential-expr
-  [query expr]
-  (concat 
-    ["("]
-    (interpose [","] (apply concat (map compile-literal-expr expr)))
-    [")"]))
-
-(defn- compile-expr 
-  "compile a where expression"
-  [query expr]
-  (cond 
-    (string? expr) (compile-literal-expr expr) 
-    (integer? expr) (compile-literal-expr expr)
-    (number? expr) (compile-literal-expr expr)
-    (float? expr) (compile-literal-expr expr)
-    (keyword? expr) (compile-keyword-expr query expr)
-    (sequential? expr) (compile-sequential-expr query expr)
-    (set? expr) (compile-sequential-expr query expr)
-    (infix? expr) (concat 
-                    ["("] 
-                    (compile-expr query (:left expr)) 
-                    [" " (:op expr) " "] 
-                    (compile-expr query (:right expr))
-                    [")"])
-    (unary? expr) (concat 
-                    ["(" (:op expr)] 
-                    (compile-expr query (:expr expr))
-                    [")"])
-    :else (throw (Exception. (str "unexpected expression: " expr)))))
-
-(defn- compile-order-clause [schema query] [])
-
-(defn- compile-where-clause 
-  [schema query] 
-  (if (empty? (:where query))
-    [] ; empty where
-    (let [where-exprs0 (map #(compile-expr query %1) (:where query))
-          where-exprs (apply concat (interpose [" AND "] where-exprs0))]
-      (cons " WHERE " where-exprs))))
-
-(defn- compile-col-clause [schema query] 
-  (interpose ", "
-    (for [column (get-columns schema query)]
-      (compile-expr query (:expr column)))))
-
-(defn- compile-limit-clause [schema query] [])
-
-(defn- partition-bind 
-  [exprs] 
-  (let [bind-pair (fn [e] (if (bind? e) ["?" [(:value e)]] [e []]))
-        exprs0 (map bind-pair exprs)
-        sql (map first exprs0)
-        binds (flatten (map second exprs0))]
-    [sql binds]))
-
-(defn- compile-on
-  [schema relation]
-  (if (= nil (:on relation))
-    []
-    [" ON " (compile-expr schema (:on relation))]))
-
-(defn- compile-relation
-  [schema relation]
-  ; fix-me: compile sub-selects here.
-  (let [relation-name (:name (lookup-table schema (:source-table relation)))
-        relation-alias (name (:as relation))
-        relation-part [relation-name " AS " relation-alias]]
-    (concat relation-part (compile-on schema relation))))
-
-(defn- compile-from-clause 
-  "Get the 'FROM' part of a select query"
-  [schema query]
-  (if (:relations query)
-    (let [first-relation (first (:relations query))
-          other-relations (rest (:relations query))]
-      (flatten 
-        [[" FROM "]
-        (compile-relation schema first-relation)
-        (flatten 
-          (for [relation other-relations]
-            [" INNER JOIN " (compile-relation schema relation)]))]))
-         []))
-
-(defn- compile-select 
-  "Compile a select query" 
-  [schema query] 
-  (let [exprs (flatten [["SELECT "] 
-                        (compile-opt-clause schema query)
-                        (compile-col-clause schema query)
-                        (compile-from-clause schema query)
-                        (compile-where-clause schema query)
-                        (compile-order-clause schema query)
-                        (compile-limit-clause schema query)])
-        [sql bind] (partition-bind exprs)] 
-    {:text (clojure.string/join sql) 
-     :column-key-paths (map :key-path (get-columns schema query))
-     :bind bind}))
-
-(defn get-col-vals 
-  [schema table kw]
-  (let [t (get @(:tables schema) table)
-        cols (filter #(contains? % kw) (:columns t))
-        kvseq (for [col cols] [(:key col) (get col kw)])
-        initials (apply hash-map (apply concat kvseq))]
-    initials))
-
-(defn- get-insert-defaults 
-  [schema table]
-  (get-col-vals schema table :initial))
-               
-(defn- get-update-defaults 
-  [schema table]
-  (get-col-vals schema table :default))
-
-(defn- compile-insert-values
-  [schema query]
-  (let [values0 (:values query)
-        initials (get-col-vals schema (:table query) :initial)
-        values (default values0 initials)
-        colvals (seq values)]
-    (if (empty? values)
-      [] 
-      (concat 
-        ["("]
-        (interpose "," (for [[k v] colvals] (name k)))
-        [") VALUES ("]
-        (interpose "," (for [[k v] colvals] (bind v)))
-        [")"]))))
-
-(defn- compile-insert 
-  "Compile an insert query"
-  [schema query]
-  (let [exprs (apply concat [["INSERT INTO " (name (:table query)) " "]
-                             (compile-insert-values schema query)])
-        [sql bind] (partition-bind exprs)]
-    {:text (clojure.string/join sql)
-     :bind bind
-     :column-key-paths []}))
-
-(defn- compile-update-values
-  [schema query]
-  (let [values0 (:values query)
-        defaults (get-col-vals schema (:table query) :default)
-        values (default values0 defaults)]
-    (concat 
-      [" SET "]
-      (apply concat 
-             (interpose [", "]
-                        (for [[k v] values]
-                          [(name k) " = " (bind v)]))))))
-
-(defn- compile-update 
-  "Compile an insert query"
-  [schema query]
-  (let [exprs (apply concat [["UPDATE " (name (:table query)) " "]
-                             (compile-update-values schema query)
-                             (compile-where-clause schema query)])
-        [sql bind] (partition-bind exprs)]
-    {:text (clojure.string/join sql)
-     :bind bind
-     :column-key-paths []}))
-
-(defn- compile-delete 
-  "Compile a delete query"
-  [schema query]
-  (let [exprs (apply concat 
-                     [["DELETE FROM " (name (:table query)) " "]
-                      (compile-where-clause schema query)])
-        [sql bind] (partition-bind exprs)]
-    {:text (clojure.string/join sql)
-     :bind bind
-     :column-key-paths []}))
-
-(defn compile-query
-  "Compile a query.
-
-  Arguments
-  query -- map, the query
-
-  Returns
-  A map with the following keys
-    :text -- string, the SQL text
-    :bind -- list, a list of literals to bind
-  "
-  [query schema]
-  (cond 
-    (select? query) (compile-select schema query)
-    (insert? query) (compile-insert schema query)
-    (update? query) (compile-update schema query)
-    (delete? query) (compile-delete schema query)
-    :else (throw (Exception. "unexpected query"))))
-
-(defn execute
-  "Run a query against an db"
-  [query db]
-  (let [compiled (compile-query query (:schema db))
-        result (execute-sql db (:text compiled) (:bind compiled))
-        rows (:rows result)
-        key-paths (:column-key-paths compiled)
-        ]
-      (assoc result 
-             :insert-id (if (insert? query) 
-                          (first (first (:generated-keys result)))
-                          nil)
-             :rows (unflatten rows key-paths))))
-
-(defn get-primary-key
-  [schema table]
-  (first (filter :primary? (:columns (get @(:tables schema) table)))))
-
-(defn make-query
-  "make a query given an entity and some where-conditions"
-  [db entity where-parts]
-  (let [table (lookup-table (:schema db) entity)
-        key-paths (for [c (:columns table)] [(:key c)])
-        cols (reduce concat (for [column (:columns table)]
-                        [(keyword (format "%s.%s" (name entity) (:name column))) ; column expr
-                         [(:key column)]
-                         ])) ; key path
-        ; for some reason -> doesn't work here:
-        from-q (from select entity)
-        cols-q (apply columns from-q cols)
-        where-q (assoc cols-q :where where-parts)]
-    where-q))
-
-(defn- get-table 
-  [schema src-table [h & more]]
-  (if (not h)
-    src-table
-    (get-table schema (:table (get @(:foreign-keys schema) [src-table h])) more)))
-
-(defn join-to 
-  "Join a set of dotted relation-paths to a result set.
-  
-  In other words, fill-in a list of related row objects.
-
-  For instance if you have a schema like:
-
-    driver (id, name)
-    car (id, driver_id, garage_id, name)
-    garage (id, house_id)
-    house (id)
-
-  (join-to db :review [:user :user.emails] [{:id 1 :user_id 3}]) =>
-    [{:id 1 :user_id 3 :user { :id 3 :emails [{:id 1 :address \"foo@bar.com\"}]}}]
-  "
-  [db table relation-paths result-set]
-  (let [relation-paths0 (sort (parse-relation-paths relation-paths))
-        schema (:schema db)
-        result-set0 (atom result-set)]
-    (doseq [relation-path relation-paths0]
-      (let [parent-table-key (get-table schema table (all-but-last relation-path))
-            relation-key (last relation-path)
-            foreign-key (get @(:foreign-keys schema) [parent-table-key relation-key])
-            remote-table (:table foreign-key)
-            foreign-key-type (:type foreign-key)
-            remote-primary-key-col (get-primary-key schema remote-table)
-            remote-primary-key (:key remote-primary-key-col)
-            remote-primary-key-name (:name remote-primary-key-col)
-            column (:column foreign-key)]
-        (when (not foreign-key)
-          (throw (Exception. (format "expecting a foreign key for %s" relation-key))))
-        (when (not remote-table)
-          (throw (Exception. (format "expecting a remote table for %s" relation-key))))
-        (cond 
-          (= foreign-key-type :has-one)
-          ; has-one case
-          ; get all of the x.y.column values
-          (let [col-vals (apply hash-set (map column (get-in2 (all-but-last relation-path) @result-set0)))
-                ; Select the remote rows
-                rows (map relation-key (:rows (-> select
-                       (from remote-table {:as relation-key})
-                       (where (in (join-keywords relation-key
-                                                 remote-primary-key)
-                                  col-vals))
-                       (execute db))))
-                ; Get (remote primary key) -> (remote row)
-                pk-to-row (zipmap (map remote-primary-key rows) rows)
-                ]
-            ; Store the result
-            (reset! result-set0 (map-in 
-                                (fn [item] 
-                                  (assoc item relation-key (get pk-to-row (get item column))))
-                                (all-but-last relation-path)
-                                @result-set0)))
-          ; handle a has-many
-          (= foreign-key-type :has-many) 
-          (let [local-primary-key :id ; fixme
-                items (get-in2 (all-but-last relation-path) @result-set0)
-                local-keys (map local-primary-key items)
-                rows (map relation-key (:rows (-> select 
-                                                (from remote-table {:as relation-key})
-                       (where (in (join-keywords relation-key column) local-keys))
-                       (execute db))))
-                local-primary-key-to-rows (get-key-to-seq rows column)
-                get-val (fn [item] (get local-primary-key-to-rows (get item local-primary-key []) []))
-                replace-item (fn [item] (assoc item relation-key (get-val item)))
-                new-result-set (map-in replace-item (all-but-last relation-path) @result-set0)]
-            (reset! result-set0 new-result-set)
-          ) 
-          :else (throw (Exception. (format "unexpected foreign key type: %s" foreign-key-type))))))
-    @result-set0))
-
-(defmacro one 
-  "Get one item
-
-  Examples
-
-    : Load a user with id 5
-    (one db :user (> :id 5)) 
-
-    ; Load a user with id 3, and review and review.business joined
-    (one db :user (= :id 3) :review :review.business) 
-    
-    ; Load a user with id 5 and email joined
-    (one db :user (= :id 5) :email) 
-    
-    ; Load a user with id 5 and email joined
-    (one db :user (= :id 5) :emails)) 
-  "
-  [db entity & options]
-  `(let [where# (list ~@(parse-dsl (filter not-keyword? options)))
-         join-key-paths# (list ~@(filter keyword? options))
-         query# (make-query ~db ~entity where#)
-         result# (execute query# ~db)
-         joined-rows# (join-to ~db ~entity join-key-paths# (take 1 (:rows result#)))]
-       (first joined-rows#)))
-
-(defmacro many 
-  "Get many items"
-  [db entity & options]
-  `(let [where# (list ~@(parse-dsl (filter not-keyword? options)))
-         join-key-paths# (list ~@(filter keyword? options))
-         query# (make-query ~db ~entity where#)
-         result# (execute query# ~db)
-         joined-rows# (join-to ~db ~entity join-key-paths# (:rows result#))]
-       joined-rows#))
-
-(defn create
-  "Create a row, returning its insert ID"
-  [db table props]
-  (-> (insert-into table props)
-    (execute db)
-    (:insert-id)))
-     
