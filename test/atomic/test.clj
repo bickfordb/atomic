@@ -3,9 +3,9 @@
         lg
         clojure.test))
 
-(lg/reset-channels!)
-(lg/add-channel! (lg/stderr-channel))
-(lg/set-level! 'atomic lg/DEBUG)
+;(lg/reset-channels!)
+;(lg/add-channel! (lg/stderr-channel))
+;(lg/set-level! 'atomic lg/DEBUG)
 
 (def schema
   (new-schema
@@ -75,3 +75,39 @@
           (exec-sql "select * from bar")
           (exec-sql "select * from baz")
           (run-all-down-migrations! example-migrations)))
+
+;
+;(def join-schema
+;  (new-schema
+;    (table :user
+;           (column :id)
+;           (column :name))
+;    (table :user_email
+;           (column :id)
+;           (column :user_id)
+;           (column :email))
+;
+;(dbtest join-test
+;        (exec-sql "create table user (
+;                    id integer not null primary key,
+;                    name text)")
+;        (exec-sql "create table user_email (
+;                    id integer not null primary key,
+;                    user_id integer not null,
+;                    email text)")
+;        (INSERT join-schema :user {:name "Brandon" :id 1})
+;        (INSERT join-schema :user_email {:id 1
+;                                         :user_id 1
+;                                         :email "brandon@person"})
+;
+;        (INSERT join-schema :user {:name "Doug" :id 2})
+;        (INSERT join-schema :user_email {:id 2
+;                                         :user_id 2
+;                                         :email "doug@person.com"})
+;
+;        (let [rows (SELECT join-schema :user
+;                           (join :user_email :ue
+;                                 (on (= :user_id
+
+
+
