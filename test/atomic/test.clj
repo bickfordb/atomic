@@ -15,8 +15,7 @@
 
 (defn mk-pool
   []
-  (create-pool
-    "jdbc:sqlite::memory:"
+  (create-pool "jdbc:sqlite::memory:"
     :generated-keys? false))
 
 (defmacro dbtest

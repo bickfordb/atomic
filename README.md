@@ -6,6 +6,7 @@ A SQL library for Clojure
 ## Usage
 
 ```clj
+(use 'atomic)
 
 (def schema
   (table :user
@@ -15,17 +16,16 @@ A SQL library for Clojure
      (column :password)
      (column :salt)))
 
-(use 'atomic)
 (with-pool (create-pool "jdbc:sqlite::memory:")
   (tx
-    (exec-sql "CREATE TABLE user (id INTEGER primary key,
+    (exec-sql "CREATE TABLE user (id INTEGER PRIMARY KEY,
                                   first_name TEXT,
                                   last_name TEXT,
                                   password TEXT)")
     (INSERT schema :user {:first_name "Brandon"
                           :last_name "Bickford"
                           :password "open sesame"})
-    (SELECT schema :user (= :last_name "Bickford"))))
+    (SELECT schema :user (?= :last_name "Bickford"))))
 ```
 
 ## License
