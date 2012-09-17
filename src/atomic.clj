@@ -91,8 +91,8 @@
 
 (defn create-pool
   [url & opts]
-  (let [opts' (apply hash-map opts)
-        {:keys [user password min-water generated-keys?] :or {min-water 1 generated-keys? true}} opts'
+  (let [opts' (apply hash-map opts) {:keys [user password min-water generated-keys?]
+                                     :or {min-water 1 generated-keys? true}} opts'
         conn-params {:user user
                      :password password
                      :url url}]
