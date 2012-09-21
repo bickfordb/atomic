@@ -4,8 +4,8 @@
         clojure.test))
 
 ;(lg/reset-channels!)
-;(lg/add-channel! (lg/stdout-channel))
-;(lg/set-level! 'atomic lg/DEBUG)
+(lg/add-channel! (lg/stdout-channel))
+(lg/set-level! 'atomic lg/DEBUG)
 
 (def schema
   (new-schema
@@ -55,10 +55,10 @@
         (tx
           (exec-sql "create table foo (id integer primary key, name text)")
           (exec-sql "select * from foo")
-          (INSERT schema :foo {:name "Cheese"})
-          (INSERT schema :foo {:name "Apple"})
+          (?insert schema :foo {:name "Cheese"})
+          (?insert schema :foo {:name "Apple"})
           (is (= [{:id 1 :name "Cheese"}]
-                (SELECT schema :foo (WHERE (?= :id 1)))))))
+                (?select schema :foo (?where (?= :id 1)))))))
 
 (def example-migrations
   [(migration
@@ -96,22 +96,22 @@
             id integer not null primary key,
             user_id integer not null,
             email text)")
-  (INSERT join-schema :user {:name "Brandon" :id 1})
-  (INSERT join-schema :user {:name "Doug" :id 2})
-  (INSERT join-schema :user {:name "Sam" :id 3})
-  (INSERT join-schema :user_email {:id 1
+  (?insert join-schema :user {:name "Brandon" :id 1})
+  (?insert join-schema :user {:name "Doug" :id 2})
+  (?insert join-schema :user {:name "Sam" :id 3})
+  (?insert join-schema :user_email {:id 1
                                    :user_id 1
                                    :email "brandon@person"})
-  (INSERT join-schema :user_email {:id 2
+  (?insert join-schema :user_email {:id 2
                                    :user_id 2
                                    :email "doug@person.com"}))
 
 (dbtest join-test
         (init-join-sql)
-        (let [rows (SELECT join-schema :user
-                           (JOIN :user_email :e
-                                 (ON (?= :id :e.id)))
-                           (WHERE (?= :id 1)))]
+        (let [rows (?select join-schema :user
+                           (?join :user_email :e
+                                 (?on (?= :id :e.id)))
+                           (?where (?= :id 1)))]
           (is (= rows [{:id 1
                         :name "Brandon"
                         :e.email "brandon@person"
@@ -120,13 +120,19 @@
 
 (dbtest left-join-test
         (init-join-sql)
-        (let [rows (SELECT join-schema :user
-                           (LEFT-JOIN :user_email :e
-                                 (ON (?= :id :e.id)))
-                           (WHERE (?= :e.id nil)))]
+        (let [rows (?select join-schema :user
+                           (?left-join :user_email :e
+                                 (?on (?= :id :e.id)))
+                           (?where (?= :e.id nil)))]
           (is (= rows [{:id 3
                         :name "Sam"
                         :e.email nil
                         :e.id nil
                         :e.user_id nil}]))))
+
+
+;(dbtest group-by-test
+;        (exec-sql "create table user (id integer primary key, age integer)")
+;        (?select nil
+;               :columns (?sum
 

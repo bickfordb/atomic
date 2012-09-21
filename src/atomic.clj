@@ -220,7 +220,7 @@
       (if (.next result-set)
         (let [row (doall (for [[col-idx col-type] col-types]
                            (let [v (condp = col-type
-                                     0 nil
+                                     java.sql.Types/NULL nil
                                      java.sql.Types/BIGINT (.getLong result-set col-idx)
                                      java.sql.Types/BIT (.getInt result-set col-idx)
                                      java.sql.Types/BLOB (.getBytes result-set col-idx)
@@ -298,13 +298,13 @@
 (def ?avg (partial ?func "AVG"))
 (def ?sum (partial ?func "SUM"))
 
-(defn WHERE
+(defn ?where
   [& forms]
   (assert (not (empty? forms)))
   {:where? true
    :expr (apply ?and forms)})
 
-(defn ON
+(defn ?on
   [& forms]
   {:on? true
    :expr (apply ?and forms)})
@@ -536,7 +536,7 @@
        :column-keys column-keys}))
 
 
-(defn SELECT
+(defn ?select
   [schema table-kw & select-opts]
   (let [[kws vals] (split-kw-opts select-opts)]
     (with-opt-conn kws
@@ -590,7 +590,7 @@
     *pool* (supports-generated-keys? *pool*)
     :else false))
 
-(defn INSERT
+(defn ?insert
   [schema table-kw value-dict & opts]
   (let [[kw-opts _] (split-kw-opts opts)]
     (with-opt-conn kw-opts
@@ -678,7 +678,7 @@
                         (table :migration
                                (column :migration_id))))
 
-(defn INNER-JOIN
+(defn ?inner-join
   [table-keyword
    alias-keyword
    & exprs]
@@ -691,18 +691,18 @@
      :alias alias-keyword
      :on on}))
 
-(def JOIN INNER-JOIN)
+(def ?join ?inner-join)
 
-(defn LEFT-JOIN
+(defn ?left-join
   "Add a left-join clause to a SELECT"
   [& xs]
-  (assoc (apply INNER-JOIN xs)
+  (assoc (apply ?inner-join xs)
          :type :left-join))
 
 (defn RIGHT-JOIN
   "Add a right-join clause to a SELECT"
   [& xs]
-  (assoc (apply INNER-JOIN xs)
+  (assoc (apply ?inner-join xs)
          :type :right-join))
 
 (defmacro migration
@@ -723,18 +723,18 @@
 
 (defn run-up-migration!
   [migration-id migration]
-  (let [rows (SELECT migration-schema :migration (WHERE (?= :migration_id migration-id)))
+  (let [rows (?select migration-schema :migration (?where (?= :migration_id migration-id)))
         exists? (> (count rows) 0)
         {:keys [up]} migration]
     (when (not exists?)
       (when up
         (lg/debug "running up migration: %s" migration-id)
         (up))
-      (INSERT migration-schema :migration {:migration_id migration-id}))))
+      (?insert migration-schema :migration {:migration_id migration-id}))))
 
 (defn run-down-migration!
   [migration-id migration]
-  (let [rows (SELECT migration-schema :migration (WHERE (?= :migration_id migration-id)))
+  (let [rows (?select migration-schema :migration (?where (?= :migration_id migration-id)))
         exists? (> (count rows) 0)
         {:keys [down]} migration]
     (when exists?
