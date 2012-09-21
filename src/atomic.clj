@@ -444,7 +444,11 @@
 (defn compile-join-expr
   [join-expr]
   (let [{:keys [type alias internal-alias table on]} join-expr
-        prefix (sql-expr (format " INNER JOIN %s AS %s" (name table) (name internal-alias)))
+        join-type-name (condp = type
+                         :right-join "RIGHT JOIN"
+                         :left-join "LEFT JOIN"
+                         "INNER JOIN")
+        prefix (sql-expr (format " %s %s AS %s" join-type-name (name table) (name internal-alias)))
         on' (when on (map-expr-keyword #(rewrite-path-prefix % alias internal-alias) on))
         on'' (when on' (map-expr-keyword #(rewrite-path-prefix % (keyword "") :_0) on'))
         on-part (if on''
@@ -670,6 +674,18 @@
      :on on}))
 
 (def JOIN INNER-JOIN)
+
+(defn LEFT-JOIN
+  "Add a left-join clause to a SELECT"
+  [& xs]
+  (assoc (apply INNER-JOIN xs)
+         :type :left-join))
+
+(defn RIGHT-JOIN
+  "Add a right-join clause to a SELECT"
+  [& xs]
+  (assoc (apply INNER-JOIN xs)
+         :type :right-join))
 
 (defmacro migration
   [& opts]
