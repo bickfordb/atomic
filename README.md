@@ -1,7 +1,7 @@
 # &#9883; ATOMIC &#9883;
 ## Description
 
-Atomic is a minimalist SQL library for Clojure intended to make a joy out of performing queries against a SQL database.  It supports transactions, multiple connections and pools.  Instead of providing an object interface it provides a straightforward SQL DSL which executes queries and returns result sets as sequences of maps.
+Atomic is a minimalist SQL library for Clojure intended to make a joy out of performing queries against a SQL database.  It supports transactions, multiple connections and pools.  Instead of providing an object interface it provides a straightforward SQL DSL which executes queries and returns result sets as sequences of maps.  Also included are some utility functions to create Ruby-On-Rails style migrations.
 
 ## Usage
 

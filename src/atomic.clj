@@ -699,7 +699,7 @@
   (assoc (apply ?inner-join xs)
          :type :left-join))
 
-(defn RIGHT-JOIN
+(defn ?right-join
   "Add a right-join clause to a SELECT"
   [& xs]
   (assoc (apply ?inner-join xs)
