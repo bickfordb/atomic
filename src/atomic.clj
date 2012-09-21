@@ -347,14 +347,7 @@
                close (sql-expr ")")
                op (sql-expr (str " " op " "))]
            (reduce
-             (fn [lhs rhs]
-               (lg/debug "compile infix: lhs: %s rhs: %s" lhs rhs)
-               (concat
-                 [open]
-                 lhs
-                 [op]
-                 rhs
-                 [close]))
+             (fn [lhs rhs] (concat [open] lhs [op] rhs [close]))
              (first sub)
              (rest sub)))))
 
@@ -515,7 +508,6 @@
         where' (when where
                  (reduce
                     (fn [where [old-prefix new-prefix]]
-                      (lg/debug "rewrite: %s old: %s new: %s" where old-prefix new-prefix)
                       (rewrite-path-prefix where old-prefix new-prefix))
                     where
                     rewrite-paths))
