@@ -215,11 +215,12 @@
   (let [md (.getMetaData result-set)
         num-cols (.getColumnCount md)
         col-idxs (range 1 (inc num-cols))
-        cols (doall (for [idx col-idxs] [idx (.getColumnType md idx)]))]
+        col-types (doall (for [idx col-idxs] [idx (.getColumnType md idx)]))]
     (loop [ret []]
       (if (.next result-set)
-        (let [row (doall (for [[col-idx col-type] cols]
+        (let [row (doall (for [[col-idx col-type] col-types]
                            (let [v (condp = col-type
+                                     0 nil
                                      java.sql.Types/BIGINT (.getLong result-set col-idx)
                                      java.sql.Types/BIT (.getInt result-set col-idx)
                                      java.sql.Types/BLOB (.getBytes result-set col-idx)
@@ -261,10 +262,24 @@
 
 (def ?and (partial infix-expr "AND"))
 (def ?or (partial infix-expr "OR"))
+(def ?is (partial infix-expr "IS"))
 (def ?+ (partial infix-expr "+"))
 (def ?- (partial infix-expr "-"))
-(def ?= (partial infix-expr "="))
+(defn ?=
+  [lhs rhs]
+  (if (nil? rhs)
+    (?is lhs rhs)
+    (infix-expr "=" lhs rhs)))
+
 (def ?!= (partial infix-expr "!="))
+
+
+(defn ?!=
+  [lhs rhs]
+  (if (nil? rhs)
+    (infix-expr "IS NOT" lhs rhs)
+    (infix-expr "!=" lhs rhs)))
+
 (def ?<= (partial infix-expr "<="))
 (def ?< (partial infix-expr "<"))
 (def ?>= (partial infix-expr ">="))
@@ -280,17 +295,14 @@
 
 (def ?min (partial ?func "MIN"))
 (def ?max (partial ?func "MAX"))
-
-(defn- where
-  [expr]
-  {:where? true :expr expr})
+(def ?avg (partial ?func "AVG"))
+(def ?sum (partial ?func "SUM"))
 
 (defn WHERE
   [& forms]
   (assert (not (empty? forms)))
-  (condp = (count forms)
-    1 (where (first forms))
-    (where (apply ?and forms))))
+  {:where? true
+   :expr (apply ?and forms)})
 
 (defn ON
   [& forms]
@@ -329,22 +341,22 @@
 
 (defn compile-infix-expr
   [{:keys [op args]}]
-  (let [sub (map' compile-expr args)
-        open (sql-expr "(")
-        close (sql-expr ")")
-        op (sql-expr (str " " op " "))]
-    (loop [i 0
-           items sub
-           ret []]
-      (if (empty? items)
-        ret
-        (let [[h & items'] items
-              prefix (if (= i 0)
-                       [open]
-                       [op open])
-              item (concat prefix h [close])
-              ret' (concat ret item)]
-          (recur (inc i) items' ret'))))))
+  (apply vector
+         (let [sub (map' compile-expr args)
+               open (sql-expr "(")
+               close (sql-expr ")")
+               op (sql-expr (str " " op " "))]
+           (reduce
+             (fn [lhs rhs]
+               (lg/debug "compile infix: lhs: %s rhs: %s" lhs rhs)
+               (concat
+                 [open]
+                 lhs
+                 [op]
+                 rhs
+                 [close]))
+             (first sub)
+             (rest sub)))))
 
 (defn compile-expr
   [e]
@@ -383,7 +395,7 @@
   [conn sql bind & opts]
   (when (nil? conn)
     (throw (Exception. "expecting non-nil connection")))
-  (lg/debug "prepare-statement '%s' bind: %s" sql bind)
+  (lg/debug "prepare-statement '%s' bind: %s" sql (apply vector bind))
   (let [opts' (apply hash-map opts)
         {:keys [generated-keys?]} opts'
         stmt (if generated-keys?
@@ -482,17 +494,31 @@
             (throw (Exception. "expecting a table")))
         {:keys [columns]} table
         table-name (:name table)
-        where (if (not (empty? wheres)) (apply ?and (map :expr wheres)))
+        where (when
+                (not (empty? wheres))
+                (apply ?and (map :expr wheres)))
         root-table-alias :_0
-        where' (when where
-                 (rewrite-path-prefix where (keyword "") root-table-alias))
+
+        ; Add the internal alias
         joins' (map-indexed
-                 (fn [idx join] (assoc join :internal-alias (format "_%d" (inc idx))))
+                 (fn [idx join] (assoc join
+                                       :internal-alias (keyword (format "_%d" (inc idx)))))
                  joins)
+        rewrite-paths (concat
+                        [[(keyword "") root-table-alias]]
+                        (for [join joins']
+                          [(:alias join) (:internal-alias join)]))
         columns (for [col (:columns table)]
                   {:name (:key col)
                    :key (:key col)
                    :alias root-table-alias})
+        where' (when where
+                 (reduce
+                    (fn [where [old-prefix new-prefix]]
+                      (lg/debug "rewrite: %s old: %s new: %s" where old-prefix new-prefix)
+                      (rewrite-path-prefix where old-prefix new-prefix))
+                    where
+                    rewrite-paths))
         columns' (apply concat columns
                          (for [join joins']
                            (let [{:keys [table alias internal-alias]} join

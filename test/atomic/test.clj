@@ -87,22 +87,27 @@
            (column :user_id)
            (column :email))))
 
+(defn init-join-sql
+  []
+  (exec-sql "create table user (
+            id integer not null primary key,
+            name text)")
+  (exec-sql "create table user_email (
+            id integer not null primary key,
+            user_id integer not null,
+            email text)")
+  (INSERT join-schema :user {:name "Brandon" :id 1})
+  (INSERT join-schema :user {:name "Doug" :id 2})
+  (INSERT join-schema :user {:name "Sam" :id 3})
+  (INSERT join-schema :user_email {:id 1
+                                   :user_id 1
+                                   :email "brandon@person"})
+  (INSERT join-schema :user_email {:id 2
+                                   :user_id 2
+                                   :email "doug@person.com"}))
+
 (dbtest join-test
-        (exec-sql "create table user (
-                    id integer not null primary key,
-                    name text)")
-        (exec-sql "create table user_email (
-                    id integer not null primary key,
-                    user_id integer not null,
-                    email text)")
-        (INSERT join-schema :user {:name "Brandon" :id 1})
-        (INSERT join-schema :user_email {:id 1
-                                         :user_id 1
-                                         :email "brandon@person"})
-        (INSERT join-schema :user {:name "Doug" :id 2})
-        (INSERT join-schema :user_email {:id 2
-                                         :user_id 2
-                                         :email "doug@person.com"})
+        (init-join-sql)
         (let [rows (SELECT join-schema :user
                            (JOIN :user_email :e
                                  (ON (?= :id :e.id)))
@@ -112,4 +117,16 @@
                         :e.email "brandon@person"
                         :e.id 1
                         :e.user_id 1}]))))
+
+(dbtest left-join-test
+        (init-join-sql)
+        (let [rows (SELECT join-schema :user
+                           (LEFT-JOIN :user_email :e
+                                 (ON (?= :id :e.id)))
+                           (WHERE (?= :e.id nil)))]
+          (is (= rows [{:id 3
+                        :name "Sam"
+                        :e.email nil
+                        :e.id nil
+                        :e.user_id nil}]))))
 
