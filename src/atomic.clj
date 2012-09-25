@@ -325,10 +325,6 @@
     [(sql-expr "NULL")]
     [(sql-expr "?" [h])]))
 
-(defn compile-var-expr
-  [[h & _]]
-  [(sql-expr h ())])
-
 (defn compile-prefix-expr
   [{:keys [op args]}]
   (let [sep [(sql-expr ", ")]
@@ -351,6 +347,11 @@
              (first sub)
              (rest sub)))))
 
+(defn compile-identifier-expr
+  [e]
+  (join "." (for [p (.split #^String (name e) "[.]")]
+              (format "\"%s\"" p))))
+
 (defn compile-expr
   [e]
   (let [ret (cond
@@ -358,7 +359,7 @@
                             (condp = type
                               :prefix (compile-prefix-expr e)
                               :infix (compile-infix-expr e)))
-              (keyword? e) [(sql-expr (name e))]
+              (keyword? e) (compile-identifier-expr e)
               :else (compile-literal-expr [e]))]
     ret))
 
@@ -453,7 +454,7 @@
                          :right-join "RIGHT JOIN"
                          :left-join "LEFT JOIN"
                          "INNER JOIN")
-        prefix (sql-expr (format " %s %s AS %s" join-type-name (name table) (name internal-alias)))
+        prefix (sql-expr (format " \"%s\" \"%s\" AS \"%s\"" join-type-name (name table) (name internal-alias)))
         on' (when on (map-expr-keyword #(rewrite-path-prefix % alias internal-alias) on))
         on'' (when on' (map-expr-keyword #(rewrite-path-prefix % (keyword "") :_0) on'))
         on-part (if on''
@@ -491,7 +492,6 @@
                 (not (empty? wheres))
                 (apply ?and (map :expr wheres)))
         root-table-alias :_0
-
         ; Add the internal alias
         joins' (map-indexed
                  (fn [idx join] (assoc join
@@ -523,9 +523,10 @@
                                 :key (join-key-paths alias (:key column))
                                 :name (:key column)}))))
         col-part [(sql-expr (join ", " (for [col columns']
-                                         (name (join-key-paths (:alias col) (:name col))))))]
+                                         (format "\"%s\".\"%s\""
+                                                 (name (:alias col)) (name (:name col))))))]
         cmd-part [(sql-expr "SELECT ")]
-        from-part [(sql-expr (format " FROM %s AS %s" table-name (name root-table-alias)))]
+        from-part [(sql-expr (format " FROM \"%s\" AS \"%s\"" table-name (name root-table-alias)))]
         join-part (apply concat (map compile-join-expr joins'))
         where-part (when where' (concat [(sql-expr " WHERE ")] (compile-expr where')))
         sql-exprs (concat cmd-part col-part from-part join-part where-part)
@@ -552,7 +553,7 @@
                        (for [row rows]
                          (to column-keys row)))))))
 
-(defn DELETE
+(defn ?delete
   [schema table-kw & select-opts]
   (let [[kws vals] (split-kw-opts select-opts)]
     (with-opt-conn kws
@@ -565,9 +566,9 @@
                          where (if (not (empty? wheres))
                                  (apply ?and (map :expr wheres)))
                          table-ident "T"
-                         col-part [(sql-expr (join ", " (for [col columns] (format "`%s.%s`" table-ident (:name col)))))]
+                         col-part [(sql-expr (join ", " (for [col columns] (format "\"%s\".\"%s\"" table-ident (:name col)))))]
                          cmd-part [(sql-expr "DELETE ")]
-                         from-part [(sql-expr (format " FROM %s %s" name table-ident))]
+                         from-part [(sql-expr (format " FROM \"%s\" \"%s\"" name table-ident))]
                          where-part (when where (concat [(sql-expr " WHERE ")] (compile-expr where)))
                          sql-exprs (concat cmd-part col-part from-part where-part)
                          [sql bind-vals] (render-sql-exprs sql-exprs)
@@ -741,7 +742,7 @@
       (when down
         (lg/debug "running down migration: %s" migration-id)
         (down))
-      (DELETE migration-schema :migration (?= :migration_id migration-id)))))
+      (?delete migration-schema :migration (?= :migration_id migration-id)))))
 
 (defn run-all-up-migrations!
   [ms]
