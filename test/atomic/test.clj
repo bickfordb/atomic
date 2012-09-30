@@ -62,12 +62,11 @@
 
 (def example-migrations
   [(migration
-    :up (exec-sql "CREATE TABLE bar (id integer primary key, name text)")
-    :down (exec-sql "DROP TABLE bar"))
+     (exec-sql "CREATE TABLE bar (id integer primary key, name text)")
+    (exec-sql "DROP TABLE bar"))
    (migration
-    :up (exec-sql "CREATE TABLE baz (id integer primary key, first_name text, last_name text)")
-    :down (exec-sql "DROP TABLE baz"))
-   ])
+    (exec-sql "CREATE TABLE baz (id integer primary key, first_name text, last_name text)")
+    (exec-sql "DROP TABLE baz"))])
 
 (dbtest migration-test
         (with-conn
@@ -130,6 +129,15 @@
                         :e.id nil
                         :e.user_id nil}]))))
 
+
+(deftest tx-val-test
+        (is (= :foo
+               (with-pool (mk-pool)
+                (with-conn
+                  (serializable :foo))))))
+
+(dbtest tx-val-test-2
+        (is (= :hello (tx :hello))))
 
 ;(dbtest group-by-test
 ;        (exec-sql "create table user (id integer primary key, age integer)")

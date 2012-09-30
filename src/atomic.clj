@@ -81,12 +81,19 @@
 (defprotocol PPool
   (^boolean supports-generated-keys? [_])
   (^java.sql.Connection acquire-connection [_])
+  (drain-connections! [_])
   (release-connection [_ ^java.sql.Connection connection]))
 
 (defrecord Pool [st]
   PPool
   (supports-generated-keys? [pool] (get @st :generated-keys? true))
   (acquire-connection [pool] (modify! st pool-st-acquire-connection))
+  (drain-connections! [pool]
+    (swap! st (fn [st']
+                (doseq [conn (:connections st')]
+                  (.close #^java.sql.Connection conn))
+                (assoc st' :connections [])))
+    nil)
   (release-connection [pool conn] (swap! st pool-st-release-connection conn)))
 
 (defn create-pool
@@ -349,8 +356,10 @@
 
 (defn compile-identifier-expr
   [e]
-  (join "." (for [p (.split #^String (name e) "[.]")]
-              (format "\"%s\"" p))))
+  (let [parts (apply vector (.split #^String (name e) "[.]"))
+        path (join "." (for [p parts] (format "\"%s\"" p)))]
+    [(sql-expr path)]))
+
 
 (defn compile-expr
   [e]
@@ -379,8 +388,8 @@
          conn# (:conn opts#)
          pool# (:pool opts#)]
      (cond
-       ;conn# (binding [atomic/*conn* conn#] (f#))
-       ;pool# (binding [atomic/*pool* pool#] (atomic/with-conn (f#)))
+       conn# (binding [atomic/*conn* conn#] (f#))
+       pool# (binding [atomic/*pool* pool#] (atomic/with-conn (f#)))
        (not (nil? atomic/*conn*)) (f#)
        (not (nil? atomic/*pool*)) (atomic/with-conn (f#))
        :else (throw (Exception. ("no pool or connection defined."))))))
@@ -454,7 +463,7 @@
                          :right-join "RIGHT JOIN"
                          :left-join "LEFT JOIN"
                          "INNER JOIN")
-        prefix (sql-expr (format " \"%s\" \"%s\" AS \"%s\"" join-type-name (name table) (name internal-alias)))
+        prefix (sql-expr (format " %s \"%s\" AS \"%s\"" join-type-name (name table) (name internal-alias)))
         on' (when on (map-expr-keyword #(rewrite-path-prefix % alias internal-alias) on))
         on'' (when on' (map-expr-keyword #(rewrite-path-prefix % (keyword "") :_0) on'))
         on-part (if on''
@@ -598,8 +607,8 @@
                    (let [key-values (seq value-dict)
                          table (get (:tables schema) table-kw)
                          full-table-name (if (:name schema)
-                                           (str (:name schema) "." (:name table))
-                                           (:name table))
+                                           (format "\"%s\".\"%s\"" (:name schema) (:name table))
+                                           (format "\"%s\"" (:name table)))
                          keys (map first key-values)
                          values (map second key-values)
                          columns-part (surround (sql-expr "(")
@@ -657,9 +666,9 @@
            (.setAutoCommit conn# false)
            (.setTransactionIsolation conn# preferred-isolation#)
            (try
-             (do
-               (f#)
-               (.commit conn#))
+             (let [ret# (f#)]
+               (.commit conn#)
+               ret#)
              (catch Exception error#
                (.rollback conn#)
                (throw error#))
@@ -669,11 +678,6 @@
                ; return to the original isolation level
                (.setTransactionIsolation conn# isolation#))))))))
 
-(defn- to-migration
-  [forms]
-  (let [opts (apply hash-map forms)]
-    {:up (list (symbol "fn") [] (:up opts))
-     :down (list (symbol "fn") [] (:down opts))}))
 
 (def migration-schema (new-schema
                         (table :migration
@@ -707,13 +711,21 @@
          :type :right-join))
 
 (defmacro migration
-  [& opts]
-  (atomic/to-migration opts))
+  ([up down]
+  `(hash-map
+     :up (fn [] ~up)
+     :down (fn [] ~down)))
+  ([up]
+   `(hash-map
+      :up (fn [] ~up))))
+
+(defmacro def-migration
+  [a-symbol & body]
+  `(def ~a-symbol (migration ~@body)))
 
 (defn create-migrations-table!
   []
   (exec-sql "CREATE TABLE IF NOT EXISTS migration (migration_id INTEGER PRIMARY KEY NOT NULL)"))
-
 
 (defn parse-keyword-path
   [a-keyword]

@@ -36,7 +36,7 @@ Atomic doesn't have much documentation at this point.  Here is a brief usage exa
     ; => [{:first_name "Brandon" :last_name "Bickford" :id 1 :password "open sesame"}]
 
     ; joins!
-    (?select schema :user (?join :user :u2 (?on (?= :first_name :u2.last_name))))))
+    (?select schema :user (?join :user :u2 (?on (?= :first_name :u2.first_name))))))
     ; => [{:first_name "Brandon" :last_name "Bickford" :id 1 :password "open sesame" :u2.first_name "Brandon" :u2.last_name "Bickford" :u2.id 1 :u2.password "open sesame"}]
 ```
 
