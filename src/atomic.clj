@@ -518,8 +518,6 @@
                          "INNER JOIN")
         prefix (sql-expr (format " %s \"%s\" AS \"%s\"" join-type-name (name table) (name internal-alias)))
         on (when on (rewrite-path-prefixes rewrite-paths on))
-        ;on (when on (map-expr-keyword #(rewrite-path-prefix % alias internal-alias) on))
-        ;on (when on (map-expr-keyword #(rewrite-path-prefix % (keyword "") :_0) on))
         on-part (if on (concat [(sql-expr " ON ")] (compile-expr on)) [])]
     (concat [prefix] on-part)))
 
