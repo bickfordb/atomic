@@ -217,6 +217,39 @@
       :relations (filter #(get % :relation?) vals)
       :columns (filter #(get % :column?) vals)}))
 
+(def sql-to-java-type-map
+  {"UUID" (.getClass (java.util.UUID/randomUUID))})
+
+(defn fix-other
+  [other]
+  (cond
+    (instance? java.util.UUID other) (str other)
+    :else other))
+
+(defn get-column-value
+  [^java.sql.ResultSet result-set
+   ^long col-idx
+   ^long col-type]
+  (condp = col-type
+    java.sql.Types/NULL nil
+    java.sql.Types/BIGINT (.getLong result-set col-idx)
+    ;java.sql.Types/UUID (str (.getUUID result-set col-idx))
+    java.sql.Types/BIT (.getInt result-set col-idx)
+    java.sql.Types/BLOB (.getBytes result-set col-idx)
+    java.sql.Types/BOOLEAN (.getInt result-set col-idx)
+    java.sql.Types/CLOB (.getClob result-set col-idx)
+    java.sql.Types/DATE (.getDate result-set col-idx)
+    java.sql.Types/DECIMAL (.getBigDecimal result-set col-idx)
+    java.sql.Types/DOUBLE (.getDouble result-set col-idx)
+    java.sql.Types/FLOAT (.getDouble result-set col-idx)
+    java.sql.Types/INTEGER (.getInt result-set col-idx)
+    java.sql.Types/NUMERIC (.getDouble result-set col-idx)
+    java.sql.Types/SMALLINT (.getInt result-set col-idx)
+    java.sql.Types/VARCHAR (.getString result-set col-idx)
+    java.sql.Types/TIMESTAMP (.getTimestamp result-set col-idx)
+    java.sql.Types/OTHER (fix-other (.getObject result-set col-idx)) ;(.getObject result-set col-idx sql-to-java-type-map)
+    ))
+
 (defn get-result-array
   [^java.sql.ResultSet result-set]
   (let [md (.getMetaData result-set)
@@ -225,24 +258,12 @@
         col-types (doall (for [idx col-idxs] [idx (.getColumnType md idx)]))]
     (loop [ret []]
       (if (.next result-set)
+        ; doall here for strictness
         (let [row (doall (for [[col-idx col-type] col-types]
-                           (let [v (condp = col-type
-                                     java.sql.Types/NULL nil
-                                     java.sql.Types/BIGINT (.getLong result-set col-idx)
-                                     java.sql.Types/BIT (.getInt result-set col-idx)
-                                     java.sql.Types/BLOB (.getBytes result-set col-idx)
-                                     java.sql.Types/BOOLEAN (.getInt result-set col-idx)
-                                     java.sql.Types/CLOB (.getClob result-set col-idx)
-                                     java.sql.Types/DATE (.getDate result-set col-idx)
-                                     java.sql.Types/DECIMAL (.getBigDecimal result-set col-idx)
-                                     java.sql.Types/DOUBLE (.getDouble result-set col-idx)
-                                     java.sql.Types/FLOAT (.getDouble result-set col-idx)
-                                     java.sql.Types/INTEGER (.getInt result-set col-idx)
-                                     java.sql.Types/NUMERIC (.getDouble result-set col-idx)
-                                     java.sql.Types/SMALLINT (.getInt result-set col-idx)
-                                     java.sql.Types/VARCHAR (.getString result-set col-idx))
+                           (let [col-value (get-column-value result-set col-idx col-type)
                                  was-null? (.wasNull result-set)]
-                             (if (.wasNull result-set) nil v))))]
+                             (when (not (.wasNull result-set))
+                               col-value))))]
           (recur (conj ret row)))
         ret))))
 
@@ -267,11 +288,19 @@
    :op op
    :args es})
 
+(defn tuple-expr
+  [exprs]
+  (assert (> (count exprs) 0))
+  {:type :tuple
+   :args exprs})
+
+
 (def ?and (partial infix-expr "AND"))
 (def ?or (partial infix-expr "OR"))
 (def ?is (partial infix-expr "IS"))
 (def ?+ (partial infix-expr "+"))
 (def ?- (partial infix-expr "-"))
+(def ?uuid (partial prefix-expr "UUID"))
 (defn ?=
   [lhs rhs]
   (if (nil? rhs)
@@ -292,6 +321,14 @@
 (def ?>= (partial infix-expr ">="))
 (def ?> (partial infix-expr ">"))
 (def ?in (partial infix-expr "IN"))
+
+(defn ?in
+  [lhs & exprs]
+  "(?in id [1 2 3])"
+  (if
+    ; bail out
+    (= (count exprs) 0)
+    (infix-expr "IN" lhs (tuple-expr exprs))))
 
 (defn ?func
   "function expression
@@ -337,9 +374,10 @@
   (let [sep [(sql-expr ", ")]
         c-sub-exprs (map' compile-expr args)
         separated (flatten' (intersperse sep c-sub-exprs))
-        expr (concat [(sql-expr op) (sql-expr "(")]
-                  :separated
-                  [(sql-expr ")")])]
+        expr (concat
+               [(sql-expr op) (sql-expr "(")]
+               separated
+               [(sql-expr ")")])]
     expr))
 
 (defn compile-infix-expr
@@ -354,18 +392,26 @@
              (first sub)
              (rest sub)))))
 
+(defn compile-tuple-expr
+  [{:keys [args]}]
+  (assert (> (count args) 0))
+  (concat
+    (list (sql-expr "("))
+    (intersperse (sql-expr ", ") (flatten' (map compile-expr args)))
+    (list (sql-expr ")"))))
+
 (defn compile-identifier-expr
   [e]
   (let [parts (apply vector (.split #^String (name e) "[.]"))
         path (join "." (for [p parts] (format "\"%s\"" p)))]
     [(sql-expr path)]))
 
-
 (defn compile-expr
   [e]
   (let [ret (cond
               (map? e) (let [{:keys [type]} e]
                             (condp = type
+                              :tuple (compile-tuple-expr e)
                               :prefix (compile-prefix-expr e)
                               :infix (compile-infix-expr e)))
               (keyword? e) (compile-identifier-expr e)
@@ -392,7 +438,7 @@
        pool# (binding [atomic/*pool* pool#] (atomic/with-conn (f#)))
        (not (nil? atomic/*conn*)) (f#)
        (not (nil? atomic/*pool*)) (atomic/with-conn (f#))
-       :else (throw (Exception. ("no pool or connection defined."))))))
+       :else (throw (Exception. "no pool or connection defined.")))))
 
 (defn- prepare-statement
   [conn sql bind & opts]
@@ -412,7 +458,9 @@
             (string? h) (.setString stmt param-idx h)
             (float? h) (.setDouble stmt param-idx h)
             (integer? h) (.setInt stmt param-idx h)
-            :else (throw (Error. (format "unexpected: %s" h))))
+            (instance? java.util.UUID h) (.setObject stmt param-idx h)
+            (instance? java.sql.Timestamp h) (.setTimestamp stmt param-idx #^java.sql.Timestamp h)
+            :else (throw (Error. (format "unexpected: %s %s" (type h) h))))
           (recur (inc param-idx) t))))
     stmt))
 
@@ -456,20 +504,23 @@
               (keyword (clojure.string/replace-first (name kw) pat dst')))]
       (map-expr-keyword f expr))))
 
+(defn rewrite-path-prefixes
+  "Rewrite an expression"
+  [rewrite-patterns expr]
+  (reduce (fn [e [src dst]] (rewrite-path-prefix e src dst)) expr rewrite-patterns))
+
 (defn compile-join-expr
-  [join-expr]
+  [rewrite-paths join-expr]
   (let [{:keys [type alias internal-alias table on]} join-expr
         join-type-name (condp = type
                          :right-join "RIGHT JOIN"
                          :left-join "LEFT JOIN"
                          "INNER JOIN")
         prefix (sql-expr (format " %s \"%s\" AS \"%s\"" join-type-name (name table) (name internal-alias)))
-        on' (when on (map-expr-keyword #(rewrite-path-prefix % alias internal-alias) on))
-        on'' (when on' (map-expr-keyword #(rewrite-path-prefix % (keyword "") :_0) on'))
-        on-part (if on''
-                  (concat [(sql-expr " ON ")] (compile-expr on''))
-                  [])
-        ]
+        on (when on (rewrite-path-prefixes rewrite-paths on))
+        ;on (when on (map-expr-keyword #(rewrite-path-prefix % alias internal-alias) on))
+        ;on (when on (map-expr-keyword #(rewrite-path-prefix % (keyword "") :_0) on))
+        on-part (if on (concat [(sql-expr " ON ")] (compile-expr on)) [])]
     (concat [prefix] on-part)))
 
 (defn compile-select-expr
@@ -492,54 +543,67 @@
            wheres
            joins]}]
   (let [{:keys [tables]} schema
+        ; table: the table mapping storing in schema
         table (get tables table-kw)
         _ (when (not table)
-            (throw (Exception. "expecting a table")))
+            (throw (Exception. (format "expecting a table to be defined for: %s" table-kw))))
         {:keys [columns]} table
+        ; table-name: the sql name of the table
         table-name (:name table)
+        ; where: the AND-ed where expression or nil
         where (when
                 (not (empty? wheres))
                 (apply ?and (map :expr wheres)))
+        ; The root table alias is named _0
         root-table-alias :_0
         ; Add the internal alias
-        joins' (map-indexed
+        ; Add an internal join alias key to the list of joins
+        ; Each join alias is _1..._n
+        joins (map-indexed
                  (fn [idx join] (assoc join
                                        :internal-alias (keyword (format "_%d" (inc idx)))))
                  joins)
+        ; rewrite-paths: sequence of a [(keyword prefix, rewrite prefix)]
         rewrite-paths (concat
                         [[(keyword "") root-table-alias]]
-                        (for [join joins']
+                        (for [join joins]
                           [(:alias join) (:internal-alias join)]))
+        ; columns: the list of column expressions
         columns (for [col (:columns table)]
                   {:name (:key col)
                    :key (:key col)
                    :alias root-table-alias})
-        where' (when where
+        ; Rewrite the where expression with the join prefix
+        where (when where
                  (reduce
                     (fn [where [old-prefix new-prefix]]
                       (rewrite-path-prefix where old-prefix new-prefix))
                     where
                     rewrite-paths))
-        columns' (apply concat columns
-                         (for [join joins']
-                           (let [{:keys [table alias internal-alias]} join
-                                 _ (assert table)
-                                 join-table (get tables table)
-                                 _ (assert join-table)
-                                 {:keys [columns]} join-table]
-                             (for [column columns]
-                               {:alias internal-alias
-                                :key (join-key-paths alias (:key column))
-                                :name (:key column)}))))
-        col-part [(sql-expr (join ", " (for [col columns']
+        ; Add the columns from the join expressions
+        join-columns (for [join joins]
+                   (let [{:keys [table alias internal-alias]} join
+                         _ (assert table)
+                         join-table (get tables table)
+                         _ (assert join-table)
+                         {:keys [columns]} join-table]
+                     (for [column columns]
+                       {:alias internal-alias
+                        :key (join-key-paths alias (:key column))
+                        :name (:key column)})))
+        columns (apply concat columns join-columns)
+        col-part [(sql-expr (join ", " (for [col columns]
                                          (format "\"%s\".\"%s\""
                                                  (name (:alias col)) (name (:name col))))))]
+        ; Build the query
         cmd-part [(sql-expr "SELECT ")]
+        ; The from part of the expression
         from-part [(sql-expr (format " FROM \"%s\" AS \"%s\"" table-name (name root-table-alias)))]
-        join-part (apply concat (map compile-join-expr joins'))
-        where-part (when where' (concat [(sql-expr " WHERE ")] (compile-expr where')))
+        ; The join part of the expression
+        join-part (apply concat (map #(compile-join-expr rewrite-paths %) joins))
+        where-part (when where (concat [(sql-expr " WHERE ")] (compile-expr where)))
         sql-exprs (concat cmd-part col-part from-part join-part where-part)
-        column-keys (map :key columns')
+        column-keys (map :key columns)
         [sql bind] (render-sql-exprs sql-exprs)]
       {:sql sql
        :bind bind
@@ -552,9 +616,9 @@
     (with-opt-conn kws
                    (let [mappings (filter map? vals)
                          compiled-expr (compile-select-expr {:schema schema
-                                                               :table-kw table-kw
-                                                               :wheres (filter :where? mappings)
-                                                               :joins (filter :join? mappings)})
+                                                             :table-kw table-kw
+                                                             :wheres (filter :where? mappings)
+                                                             :joins (filter :join? mappings)})
                          {:keys [sql bind column-keys]} compiled-expr
                          stmt (prepare-statement *conn* sql bind)]
                      (let [result-set (.executeQuery stmt)
@@ -606,6 +670,8 @@
     (with-opt-conn kw-opts
                    (let [key-values (seq value-dict)
                          table (get (:tables schema) table-kw)
+                         _ (if-not table
+                             (throw (Exception. (format "expecting table \"%s\" to be defined" table-kw))))
                          full-table-name (if (:name schema)
                                            (format "\"%s\".\"%s\"" (:name schema) (:name table))
                                            (format "\"%s\"" (:name table)))
@@ -625,8 +691,11 @@
                          stmt (prepare-statement' *conn* all-parts :generated-keys? (generated-keys? kw-opts))
                          row-count (.executeUpdate stmt)
                          generated-keys (.getGeneratedKeys stmt)
-                         insert-id (when (.next generated-keys)
-                                     (.getLong generated-keys 1))]
+                         generated-values (get-result-array generated-keys)
+                         [[insert-id & xs] & ys] generated-values
+                         ;insert-id (when (.next generated-keys)
+                         ;            (.getLong generated-keys 1))
+                         ]
                      insert-id))))
 
 (defn ROLLBACK
@@ -777,4 +846,22 @@
       (run-up-migration! i (first ms))
       (recur (dec i)
              (rest ms)))))
+
+(defn ?select-one
+  [& args]
+  (first (apply ?select args)))
+
+(defn create-index
+  [table
+   & cols]
+  ;(assert (> (count cols) 0))
+  (exec-sql (format "CREATE INDEX ON \"%s\" USING BTREE(%s)"
+                    (name table)
+                    (clojure.string/join ", "
+                                         (for [col cols]
+                                           (format "\"%s\"" (name col)))))))
+
+(defn drop-table
+  [table]
+  (exec-sql (format "DROP TABLE \"%s\"" (name table))))
 

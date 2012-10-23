@@ -139,6 +139,16 @@
 (dbtest tx-val-test-2
         (is (= :hello (tx :hello))))
 
+
+(dbtest double-join-test
+        (init-join-sql)
+        (?select join-schema :user
+                 (?left-join :user_email :e
+                             (?on (?= :id :e.id)))
+                 (?left-join :user_email :e2
+                             (?on (?= :e2.id :e.id)))))
+
+
 ;(dbtest group-by-test
 ;        (exec-sql "create table user (id integer primary key, age integer)")
 ;        (?select nil
