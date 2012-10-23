@@ -138,28 +138,19 @@
       (apply assoc x col-opts)
       x)))
 
+(defn- flatten'
+  "Classic/1-deep version of flatten"
+  [seq-seq]
+  (apply concat seq-seq))
+
 (defn- to
-  [srcs dsts]
-  (let [ret (transient {})]
-    (loop [srcs srcs
-           dsts dsts]
-      (if (or (empty? srcs) (empty? dsts))
-        ret
-        (let [[src & srcs'] srcs
-              [dst & dsts'] dsts]
-          (assoc! ret src dst)
-          (recur srcs' dsts'))))
-    (persistent! ret)))
+  [keys vals]
+  (apply hash-map (flatten' (map list keys vals))))
 
 (defn- map'
   "strict version of map"
   [f a-seq]
   (doall (map f a-seq)))
-
-(defn- flatten'
-  "Classic/1-deep version of flatten"
-  [seq-seq]
-  (apply concat seq-seq))
 
 (defn- intersperse
   [sep a-seq]
@@ -566,7 +557,7 @@
                         [[(keyword "") root-table-alias]]
                         (for [join joins]
                           [(:alias join) (:internal-alias join)]))
-        ; columns: the list of column expressions
+        ; columns: The list of column expressions
         columns (for [col (:columns table)]
                   {:name (:key col)
                    :key (:key col)
@@ -598,7 +589,7 @@
         ; The from part of the expression
         from-part [(sql-expr (format " FROM \"%s\" AS \"%s\"" table-name (name root-table-alias)))]
         ; The join part of the expression
-        join-part (apply concat (map #(compile-join-expr rewrite-paths %) joins))
+        join-part (flatten' (map #(compile-join-expr rewrite-paths %) joins))
         where-part (when where (concat [(sql-expr " WHERE ")] (compile-expr where)))
         sql-exprs (concat cmd-part col-part from-part join-part where-part)
         column-keys (map :key columns)
@@ -619,10 +610,11 @@
                                                              :joins (filter :join? mappings)})
                          {:keys [sql bind column-keys]} compiled-expr
                          stmt (prepare-statement *conn* sql bind)]
+                     (doall column-keys)
                      (let [result-set (.executeQuery stmt)
                            rows (get-result-array result-set)]
-                       (for [row rows]
-                         (to column-keys row)))))))
+                       (doall (for [row rows]
+                                (to column-keys row))))))))
 
 (defn ?delete
   [schema table-kw & select-opts]

@@ -3,10 +3,6 @@
         lg
         clojure.test))
 
-;(lg/reset-channels!)
-(lg/add-channel! (lg/stdout-channel))
-(lg/set-level! 'atomic lg/DEBUG)
-
 (def schema
   (new-schema
     (table :foo
@@ -142,15 +138,16 @@
 
 (dbtest double-join-test
         (init-join-sql)
-        (?select join-schema :user
-                 (?left-join :user_email :e
-                             (?on (?= :id :e.id)))
-                 (?left-join :user_email :e2
-                             (?on (?= :e2.id :e.id)))))
-
-
-;(dbtest group-by-test
-;        (exec-sql "create table user (id integer primary key, age integer)")
-;        (?select nil
-;               :columns (?sum
+        (let [user (->
+                     (?select join-schema :user
+                              (?left-join :user_email :e
+                                          (?on (?= :id :e.id)))
+                              (?left-join :user_email :e2
+                                          (?on (?= :e2.id :e.id)))
+                              (?where (?= :name "Brandon")))
+                     first)]
+          (is (= (:name user) "Brandon"))
+          (is (= (:e.user_id user) 1))
+          (is (= (:e2.user_id user) 1))
+          ))
 
