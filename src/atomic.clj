@@ -109,7 +109,6 @@
           (try
             (RT/loadClassForName driver-name)
             (catch Exception exception nil))))
-
     (Pool. (atom {:conn-params conn-params
                   :min-water min-water
                   :generated-keys? generated-keys?
@@ -121,13 +120,15 @@
 
 (defmacro with-conn
   [& body]
-  `(binding [atomic/*conn* (atomic/acquire-connection atomic/*pool*)]
-     (when (nil? atomic/*conn*)
-       (throw (Exception. "unexpected nil connection")))
-     (try
-       (do ~@body)
-       (finally
-         (atomic/release-connection atomic/*pool* atomic/*conn*)))))
+  `(let [pool# *pool*
+         conn# (atomic/acquire-connection pool#)]
+       (when (nil? conn#) (throw (Exception. "unexpected nil connection")))
+       (try
+         (binding [atomic/*conn* conn#] ~@body)
+         (catch Exception error
+           (atomic/release-connection pool# conn#)
+           (throw error)))
+       (atomic/release-connection pool# conn#)))
 
 (defn column
   [col-name & col-opts]
@@ -736,7 +737,6 @@
                (.setAutoCommit conn# true)
                ; return to the original isolation level
                (.setTransactionIsolation conn# isolation#))))))))
-
 
 (def migration-schema (new-schema
                         (table :migration
